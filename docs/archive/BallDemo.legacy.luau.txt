@@ -1,0 +1,40 @@
+-- BallDemo: server-authoritative placeholder demo of a ball bouncing on a table.
+-- Gameplay state lives here; the ball Part is anchored and only moved by this script.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local BallPhysics = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BallPhysics"))
+
+local tableModel = workspace:WaitForChild("PingPongTable")
+local tableTop = tableModel:WaitForChild("TableTop") :: BasePart
+local ball = tableModel:WaitForChild("Ball") :: BasePart
+
+local config = table.clone(BallPhysics.DefaultConfig)
+config.radius = ball.Size.X / 2
+
+local surfaces = { BallPhysics.surfaceFromPart(tableTop) }
+local spawnPos = tableTop.Position + Vector3.new(0, 8, 0)
+local MIN_BOUNCE_SPEED = 6 -- below this, relaunch so the demo keeps going
+local RESET_BELOW_Y = surfaces[1].topY - 20
+
+local function launch(): BallPhysics.State
+	-- Small drift: one launch lasts ~3.6s, so this keeps the ball within the 9x5 table top.
+	local drift = Vector3.new(math.random(-10, 10) / 10, 0, math.random(-5, 5) / 10)
+	return BallPhysics.newState(spawnPos, drift)
+end
+
+local state = launch()
+
+RunService.Heartbeat:Connect(function(dt)
+	local bounces = BallPhysics.step(state, config, surfaces, dt)
+	if bounces > 0 and state.velocity.Y < MIN_BOUNCE_SPEED then
+		state = launch()
+	elseif state.position.Y < RESET_BELOW_Y then
+		print("[BallDemo] ball fell off table, resetting")
+		state = launch()
+	end
+	ball.CFrame = CFrame.new(state.position)
+end)
+
+print("[BallDemo] running")

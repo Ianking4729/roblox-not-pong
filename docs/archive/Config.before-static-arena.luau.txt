@@ -1,0 +1,337 @@
+--!strict
+-- Config: single source of truth for NOT PONG tunables.
+--
+-- UNITS
+--   Distance : studs.            1 stud = 0.1 m  (StudsPerMeter = 10)
+--   Time     : seconds
+--   Speed    : studs / second    (1 m/s = 10 studs/s)
+--   Accel    : studs / second^2  (9.81 m/s^2 = 98.1 studs/s^2)
+-- Real-world measurements live in `Config.Real` in METERS and are converted exactly once, below.
+-- Everything else in the codebase consumes the stud values. Never hard-code a stud number elsewhere.
+--
+-- CANONICAL vs PRESENTATION (read this before changing sizes)
+--   Config.Real           canonical ITTF metres. Never edited for presentation reasons.
+--   StudsPerMeter (10)    the unit conversion: 1 stud = 0.1 m. Unchanged by anything below.
+--   ArenaScale (1.15)     presentation multiplier on the TABLE + NET assembly: every table/net stud value is
+--                         metres * 10 * ArenaScale. Layout, serve points and BallPhysics surfaces derive from those,
+--                         so they stay coherent automatically. With ArenaScale = 1 the arena is true 1 stud = 0.1 m;
+--                         at 1.15 the table is 1.15x bigger relative to the avatar, ball and paddle, i.e. effectively
+--                         1 stud = 0.0870 m for the table (0.1 / 1.15). Table proportions are unchanged.
+--                         NOT scaled by ArenaScale: the ball's gameplay radius, gravity (98.1 studs/s^2 is a physical
+--                         constant of the ball simulation, not of the table), the avatar height and the stand-back
+--                         distance behind the end line (those are in true stud units).
+--   BallVisualScale(1.25) multiplier on the RENDERED ball only. The gameplay radius (Ball.Radius, 0.2 studs) is
+--                         unchanged; physics never reads the visual size. At contact the 1.25x shell sinks 0.05 studs
+--                         (5 mm) into the table; that is the deliberate, documented visual error.
+--
+-- AXES (fixed, so the table is axis-aligned and BallPhysics surfaces stay valid)
+--   Table length runs along Z. The player stands on the +Z side facing -Z. The bot stands on the -Z side.
+--   Table width runs along X. Y is up.
+--
+-- NOTE ON THE AVATAR: Roblox R15 hands are ~1.7x larger than real hands relative to body height, so the
+-- paddle's *visual* is scaled up (Config.Paddle.VisualScale) while gameplay uses the real dimensions.
+
+local STUDS_PER_METER = 10
+
+local function toStuds(meters: number): number
+	return meters * STUDS_PER_METER
+end
+
+-- Presentation-only multipliers (see the header). Edit these, never the Real table.
+local Presentation = {
+	ArenaScale = 1.15, -- table + net assembly (and everything derived from them)
+	BallVisualScale = 1.25, -- rendered ball only
+}
+
+-- Metres -> studs for the table/net assembly: the unit conversion times ArenaScale.
+local function toArenaStuds(meters: number): number
+	return meters * STUDS_PER_METER * Presentation.ArenaScale
+end
+
+-- ITTF / real-world measurements, in METERS.
+local Real = table.freeze({
+	TableLength = 2.74,
+	TableWidth = 1.525,
+	TableHeight = 0.76, -- floor to playing surface
+	TableTopThickness = 0.025,
+	LineWidth = 0.02,
+	CenterLineWidth = 0.003,
+	NetHeight = 0.1525, -- above the playing surface
+	NetOverhang = 0.1525, -- net extends this far past each side edge
+	NetThickness = 0.005,
+	NetPostWidth = 0.03,
+	BallDiameter = 0.04,
+	AvatarHeight = 1.75,
+	AvatarStandBack = 1.0, -- distance behind the end line
+	PaddleBladeWidth = 0.15,
+	PaddleBladeHeight = 0.16,
+	PaddleBladeThickness = 0.008,
+	PaddleHandleLength = 0.10,
+	PaddleHandleWidth = 0.03,
+	PaddleHandleThickness = 0.025,
+	Gravity = 9.81, -- m/s^2
+})
+
+-- All values below are at ArenaScale (27.4 / 15.25 / 7.6 at 1.0; 31.51 / 17.54 / 8.74 at 1.15).
+local Table = {
+	Length = toArenaStuds(Real.TableLength),
+	Width = toArenaStuds(Real.TableWidth),
+	Height = toArenaStuds(Real.TableHeight), -- to playing surface
+	TopThickness = toArenaStuds(Real.TableTopThickness), -- visual slab only; the collision block is full height
+	LineWidth = toArenaStuds(Real.LineWidth),
+	CenterLineWidth = toArenaStuds(Real.CenterLineWidth),
+	LegWidth = 0.6 * Presentation.ArenaScale,
+	LegInsetX = 1.5 * Presentation.ArenaScale,
+	LegInsetZ = 2.5 * Presentation.ArenaScale,
+	Style = "Default", -- key into Config.TableStyles (cosmetic only)
+}
+
+local Net = {
+	Height = toArenaStuds(Real.NetHeight),
+	Overhang = toArenaStuds(Real.NetOverhang),
+	Thickness = toArenaStuds(Real.NetThickness),
+	Length = Table.Width + 2 * toArenaStuds(Real.NetOverhang),
+	PostWidth = toArenaStuds(Real.NetPostWidth),
+	TapeHeight = 0.15 * Presentation.ArenaScale,
+}
+
+-- GAMEPLAY ball: Radius is the canonical collision radius BallPhysics uses. Not affected by ArenaScale.
+-- VISUAL ball: only the rendered part uses VisualDiameter.
+local Ball = {
+	Diameter = toStuds(Real.BallDiameter), -- 0.4
+	Radius = toStuds(Real.BallDiameter) / 2, -- 0.2
+	VisualDiameter = toStuds(Real.BallDiameter) * Presentation.BallVisualScale, -- 0.5
+	Style = "Default", -- key into Config.BallStyles (cosmetic only)
+}
+
+local Arena = {
+	-- Center of the table footprint at floor level. Offset on Z to stay clear of the pre-existing Workspace.Rig.
+	Origin = Vector3.new(0, 0, 60),
+	FloorY = 0, -- top of the Baseplate
+}
+
+local Avatar = {
+	-- Every competitor is scaled so feet-to-top-of-head (accessories ignored) equals this. There is deliberately
+	-- no fixed scale factor: avatars differ a lot (default R15 is 5.46 studs tall at scale 1, a tested custom
+	-- avatar only 2.77), so AvatarService measures each body and computes the factor.
+	Height = toStuds(Real.AvatarHeight), -- 17.5
+	StandBack = toStuds(Real.AvatarStandBack), -- 10
+	WalkSpeed = 16,
+}
+
+local Serve = {
+	RestFromEndLine = 3, -- studs in from the end line where the ball rests before a serve
+	-- Sideways offset toward the server's paddle hand (measured: scaled R15 hands hang 4.7 studs from centre).
+	-- Keeps the resting ball out from behind the player's own body as seen from the camera.
+	-- The player's right is +X; the bot faces the other way, so its right is -X.
+	RestSideOffset = 4.7,
+}
+
+local originX, originZ = Arena.Origin.X, Arena.Origin.Z
+local surfaceY = Arena.FloorY + Table.Height
+local halfL, halfW = Table.Length / 2, Table.Width / 2
+
+-- Derived world-space layout. Built from the values above; do not edit by hand.
+local Layout = {
+	FloorY = Arena.FloorY,
+	SurfaceY = surfaceY,
+	TableSurfaceCenter = Vector3.new(originX, surfaceY, originZ),
+	TableTopCenter = Vector3.new(originX, surfaceY - Table.TopThickness / 2, originZ),
+	NetCenter = Vector3.new(originX, surfaceY + Net.Height / 2, originZ),
+	PlayerStand = Vector3.new(originX, Arena.FloorY, originZ + halfL + Avatar.StandBack),
+	BotStand = Vector3.new(originX, Arena.FloorY, originZ - (halfL + Avatar.StandBack)),
+	PlayerFacing = Vector3.new(0, 0, -1),
+	BotFacing = Vector3.new(0, 0, 1),
+	ServeBall = {
+		Player = Vector3.new(originX + Serve.RestSideOffset, surfaceY + Ball.Radius, originZ + halfL - Serve.RestFromEndLine),
+		Bot = Vector3.new(originX - Serve.RestSideOffset, surfaceY + Ball.Radius, originZ - halfL + Serve.RestFromEndLine),
+	},
+	-- Surfaces in the shape BallPhysics expects (axis-aligned, split at the net).
+	PlayerHalf = {
+		topY = surfaceY,
+		minX = originX - halfW,
+		maxX = originX + halfW,
+		minZ = originZ,
+		maxZ = originZ + halfL,
+	},
+	BotHalf = {
+		topY = surfaceY,
+		minX = originX - halfW,
+		maxX = originX + halfW,
+		minZ = originZ - halfL,
+		maxZ = originZ,
+	},
+}
+
+local Config = {
+	Scale = {
+		StudsPerMeter = STUDS_PER_METER,
+		MetersPerStud = 1 / STUDS_PER_METER,
+		toStuds = toStuds,
+		toArenaStuds = toArenaStuds,
+	},
+	Presentation = Presentation,
+	Real = Real,
+	Table = Table,
+	Net = Net,
+	Ball = Ball,
+	Arena = Arena,
+	Avatar = Avatar,
+	Serve = Serve,
+	Layout = Layout,
+
+	Paddle = {
+		-- Gameplay dimensions (real, in studs). Hit detection will use these, not the visual size.
+		BladeWidth = toStuds(Real.PaddleBladeWidth),
+		BladeHeight = toStuds(Real.PaddleBladeHeight),
+		BladeThickness = toStuds(Real.PaddleBladeThickness),
+		HandleLength = toStuds(Real.PaddleHandleLength),
+		HandleWidth = toStuds(Real.PaddleHandleWidth),
+		HandleThickness = toStuds(Real.PaddleHandleThickness),
+		ContactRadius = toStuds(0.08), -- FUTURE: distance within which a swing can strike the ball
+		-- Placeholder visual only. Replaceable without touching gameplay.
+		VisualScale = 1.6,
+		-- Where the paddle sits relative to the right hand's centre, in CHARACTER space (studs): +Right is the
+		-- carrier's right, +Up, +Forward is the way they face. The arm is posed by Config.Stance so the hand is in
+		-- front of the body; the handle is centred just above the fist with the blade up, tipped slightly toward the
+		-- table and outward. Visual only; hit detection never reads this.
+		Hold = {
+			Right = 0,
+			Up = 1.0, -- the handle's centre sits above the fist so the blade stands clear of the forearm
+			Forward = 2.0, -- and just beyond the hand (the stance holds the forearm pointing forward)
+			TiltForwardDegrees = 10, -- blade tip leans toward the opponent
+			TiltOutDegrees = 0, -- blade tip leans away from the body
+		},
+	},
+
+	-- Ball physics in the exact shape BallPhysics.step/tick expects.
+	BallPhysics = {
+		radius = Ball.Radius,
+		gravity = toStuds(Real.Gravity), -- 98.1 studs/s^2
+		restitution = 0.9, -- ITTF ball: ~24.5 cm rebound from a 30.5 cm drop => e ~ 0.9
+		friction = 0.98, -- horizontal speed kept per table bounce
+		restSpeed = 1, -- studs/s; below this the ball settles instead of bouncing
+		fixedStep = 1 / 120,
+		maxStepsPerUpdate = 12,
+	},
+
+	-- Other physics constants (FUTURE: not yet consumed).
+	Physics = {
+		PaddleRestitution = 0.85,
+		AirDragPerSecond = 0.0, -- placeholder; BallPhysics has no drag yet
+		-- Per tick the ball moves up to ~2 studs at max speed while the net is 0.05 studs thick,
+		-- so net crossing MUST use a swept (continuous) test, not a per-tick overlap test.
+	},
+
+	Timing = {
+		ServeReadyDelay = 1.0, -- seconds from ReadyToServe before a serve may begin
+		PointResetDelay = 1.5, -- seconds shown on PointScored before the next point
+		RallyTimeout = 10, -- FUTURE: seconds without a hit before the rally is ended
+		BotReactionTime = 0.25, -- FUTURE
+		AppearanceLoadTimeout = 8, -- seconds to wait for a player's avatar appearance
+		StancePoseTimeout = 5, -- seconds the server waits to see a character's stance before attaching its paddle
+	},
+
+	Match = {
+		PointsToWin = 11,
+		WinBy = 2,
+		ServesPerTurn = 2,
+		FirstServer = "Player", -- "Player" | "Bot"
+	},
+
+	-- FUTURE shot parameters (placeholders; nothing reads these yet). Speeds in metres/second.
+	Shot = {
+		MinSpeedMps = 3,
+		MaxSpeedMps = 22,
+		ChargeTimeSeconds = 0.8,
+		AimMaxYawDegrees = 35,
+		AimMaxPitchDegrees = 25,
+		SpinMaxRevsPerSecond = 100,
+		HitWindowSeconds = 0.15,
+	},
+
+	-- Ready stance (placeholder pose). Applied as additive Motor6D C0 rotations in degrees, so Roblox's own
+	-- idle/walk animation layers on top. Signs follow R15 joint axes: +X swings a hanging limb forward.
+	-- Knee bend lowers the body, so HipHeight is reduced by the computed drop to keep the feet on the floor.
+	Stance = {
+		KneeBendDegrees = 20, -- hip flexion; the knee bends twice this (feet stay planted)
+		LeanDegrees = 12, -- forward lean at the waist
+		HeadCounterDegrees = 8, -- tips the head back up so the eyes stay on the table
+		RightShoulder = Vector3.new(45, 0, 18), -- x: raise forward, z: out from body (degrees)
+		RightElbow = Vector3.new(60, 0, 0),
+		LeftShoulder = Vector3.new(30, 0, -18),
+		LeftElbow = Vector3.new(45, 0, 0),
+	},
+
+	Bot = {
+		Name = "NotPongBot",
+		WalkSpeed = 16,
+		ShirtColor = Color3.fromRGB(200, 55, 55),
+		SkinColor = Color3.fromRGB(226, 180, 140),
+		PantsColor = Color3.fromRGB(40, 40, 50),
+	},
+
+	Camera = {
+		FieldOfView = 56,
+		Height = 42, -- studs above the floor
+		DistanceBehind = 15, -- studs behind the player's root part (along +Z)
+		ShoulderOffset = 0, -- sideways shift of the camera; 0 = centred behind the player
+		LookAtHeightOffset = -3.74, -- added to table surface height for the aim point (aims ~5 studs above the floor)
+		LookAheadStuds = -2, -- shifts the aim point toward the opponent (-Z); negative = toward the player
+		LateralFollow = 0, -- 0 = aim at table centre, 1 = follow the player sideways
+		Smoothing = 10, -- exponential follow rate (1/s)
+		-- Local-only fade of the player's own avatar (0 = opaque, 1 = invisible). The paddle is never faded.
+		-- The head is kept OPAQUE by default: a tested avatar's head (a textured high-fidelity mesh) vanishes at ANY
+		-- LocalTransparencyModifier above 0 (0.1 was already enough), leaving only a thin sliver. Only the body fades.
+		-- Raise HeadTransparency only for heads that fade properly.
+		BodyTransparency = 0.6,
+		HeadTransparency = 0,
+	},
+
+	CollisionGroups = {
+		Table = "NP_Table",
+		Ball = "NP_Ball",
+		Paddle = "NP_Paddle",
+		Character = "NP_Character",
+	},
+
+	Names = {
+		Arena = "NotPongArena",
+		SeatedPlayerAttribute = "SeatedUserId",
+	},
+
+	-- COSMETICS. Purely visual; nothing in gameplay or physics reads these. A style is applied by
+	-- ArenaBuilder.applyBallStyle / applyTableStyle without touching geometry or collision.
+	BallStyles = {
+		Default = {
+			Color = Color3.fromRGB(255, 150, 20),
+			Material = Enum.Material.SmoothPlastic,
+			Reflectance = 0,
+			TextureId = "", -- FUTURE: pattern/texture (applied to the visual shell only)
+			Trail = { Enabled = false, Color = Color3.fromRGB(255, 200, 120), Lifetime = 0.25, Width = 0.3 },
+		},
+	},
+	TableStyles = {
+		Default = {
+			SurfaceColor = Color3.fromRGB(22, 78, 150),
+			Material = Enum.Material.SmoothPlastic,
+			TextureId = "", -- FUTURE: surface pattern
+			LineColor = Color3.fromRGB(245, 245, 245),
+		},
+	},
+
+	Colors = {
+		Line = Color3.fromRGB(245, 245, 245),
+		Leg = Color3.fromRGB(45, 45, 50),
+		Net = Color3.fromRGB(235, 235, 235),
+		PaddleBlade = Color3.fromRGB(190, 35, 35),
+		PaddleHandle = Color3.fromRGB(205, 160, 110),
+	},
+
+	Debug = {
+		ShowStateLabel = true,
+		Verbose = true,
+	},
+}
+
+return Config

@@ -1,0 +1,302 @@
+-- ArenaBuilder: builds the placeholder table, net, ball and player spawn from Config.
+-- Everything is generated from Config so the arena can be resized by editing numbers, and gameplay
+-- code never depends on these particular parts' look (only on the references returned by build()).
+--
+-- GAMEPLAY vs COSMETIC
+--   Table: Table/Collision/TableTop is the invisible, full-height collision block (the gameplay surface; its top is
+--          the playing surface). Table/Visual/* is everything you see. Styles recolour Visual parts only.
+--   Ball:  `Ball` is the gameplay part (canonical diameter, invisible, what the physics moves). `Ball/BallVisual` is
+--          the shell (Config.Ball.VisualDiameter) that styles touch. Styles never change sizes or collision.
+--          Both are anchored, so MOVE THE BALL ONLY THROUGH ArenaBuilder.moveBall (it keeps the shell centred on the
+--          gameplay ball; a weld would not carry an anchored part).
+
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local CollisionSetup = require(script.Parent:WaitForChild("CollisionSetup"))
+
+local ArenaBuilder = {}
+
+local function makePart(props: { [string]: any }): Part
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Material = Enum.Material.SmoothPlastic
+	for k, v in props do
+		(p :: any)[k] = v
+	end
+	return p
+end
+
+function ArenaBuilder.build()
+	local existing = Workspace:FindFirstChild(Config.Names.Arena)
+	if existing then
+		existing:Destroy()
+	end
+
+	local T, N, B, L, C = Config.Table, Config.Net, Config.Ball, Config.Layout, Config.Colors
+	local origin = Config.Arena.Origin
+	local folder = Instance.new("Folder")
+	folder.Name = Config.Names.Arena
+
+	-- TABLE ---------------------------------------------------------------------------------------
+	local tableModel = Instance.new("Model")
+	tableModel.Name = "Table"
+
+	-- Gameplay: one invisible solid block from floor to playing surface (also stops avatars walking under it).
+	local collisionFolder = Instance.new("Folder")
+	collisionFolder.Name = "Collision"
+	collisionFolder.Parent = tableModel
+	local top = makePart({
+		Name = "TableTop",
+		Size = Vector3.new(T.Width, T.Height - L.FloorY, T.Length),
+		Position = Vector3.new(origin.X, L.FloorY + (T.Height - L.FloorY) / 2, origin.Z),
+		Transparency = 1,
+		CanQuery = false,
+		Parent = collisionFolder,
+	})
+
+	-- Cosmetic: everything below is the visible table. Style-able; never read by gameplay.
+	local visualFolder = Instance.new("Folder")
+	visualFolder.Name = "Visual"
+	visualFolder.Parent = tableModel
+	local surface = makePart({
+		Name = "TableSurface",
+		Size = Vector3.new(T.Width, T.TopThickness, T.Length),
+		Position = L.TableTopCenter,
+		CanCollide = false,
+		CanQuery = false,
+		CanTouch = false,
+		Parent = visualFolder,
+	})
+	surface:SetAttribute("StyleRole", "Surface")
+
+	local lineH = 0.02 -- 2 mm of paint, sitting on the playing surface
+	local lineY = L.SurfaceY + lineH / 2
+	local function line(name: string, size: Vector3, offset: Vector3)
+		local p = makePart({
+			Name = name,
+			Size = size,
+			Position = Vector3.new(origin.X + offset.X, lineY, origin.Z + offset.Z),
+			Color = C.Line,
+			CanCollide = false,
+			CanQuery = false,
+			CanTouch = false,
+			Parent = visualFolder,
+		})
+		p:SetAttribute("StyleRole", "Line")
+	end
+	local halfW, halfL = T.Width / 2, T.Length / 2
+	line("SideLineLeft", Vector3.new(T.LineWidth, lineH, T.Length), Vector3.new(-(halfW - T.LineWidth / 2), 0, 0))
+	line("SideLineRight", Vector3.new(T.LineWidth, lineH, T.Length), Vector3.new(halfW - T.LineWidth / 2, 0, 0))
+	line("EndLinePlayer", Vector3.new(T.Width, lineH, T.LineWidth), Vector3.new(0, 0, halfL - T.LineWidth / 2))
+	line("EndLineBot", Vector3.new(T.Width, lineH, T.LineWidth), Vector3.new(0, 0, -(halfL - T.LineWidth / 2)))
+	line("CenterLine", Vector3.new(T.CenterLineWidth, lineH, T.Length), Vector3.zero)
+
+	local legHeight = L.SurfaceY - T.TopThickness - L.FloorY
+	for i, sign in { Vector3.new(1, 0, 1), Vector3.new(-1, 0, 1), Vector3.new(1, 0, -1), Vector3.new(-1, 0, -1) } do
+		makePart({
+			Name = "Leg" .. i,
+			Size = Vector3.new(T.LegWidth, legHeight, T.LegWidth),
+			Position = Vector3.new(
+				origin.X + sign.X * (halfW - T.LegInsetX),
+				L.FloorY + legHeight / 2,
+				origin.Z + sign.Z * (halfL - T.LegInsetZ)
+			),
+			Color = C.Leg,
+			CanCollide = false, -- the Collision block already fills this space
+			CanQuery = false,
+			CanTouch = false,
+			Parent = visualFolder,
+		})
+	end
+	tableModel.PrimaryPart = top
+	tableModel.Parent = folder
+
+	-- NET -----------------------------------------------------------------------------------------
+	local netModel = Instance.new("Model")
+	netModel.Name = "Net"
+	makePart({
+		Name = "NetMesh",
+		Size = Vector3.new(N.Length, N.Height, N.Thickness),
+		Position = L.NetCenter,
+		Color = C.Net,
+		Transparency = 0.35,
+		Parent = netModel,
+	})
+	makePart({
+		Name = "NetTape",
+		Size = Vector3.new(N.Length, N.TapeHeight, N.Thickness * 2),
+		Position = Vector3.new(origin.X, L.SurfaceY + N.Height - N.TapeHeight / 2, origin.Z),
+		Color = C.Line,
+		Parent = netModel,
+	})
+	local postHeight = N.Height + 0.1
+	for _, sign in { -1, 1 } do
+		makePart({
+			Name = if sign < 0 then "PostLeft" else "PostRight",
+			Size = Vector3.new(N.PostWidth, postHeight, N.PostWidth * 2),
+			Position = Vector3.new(
+				origin.X + sign * (N.Length / 2 + N.PostWidth / 2),
+				L.SurfaceY + postHeight / 2,
+				origin.Z
+			),
+			Color = C.Leg,
+			Parent = netModel,
+		})
+	end
+	netModel.Parent = folder
+
+	-- BALL ----------------------------------------------------------------------------------------
+	local ball = makePart({
+		Name = "Ball",
+		Shape = Enum.PartType.Ball,
+		Size = Vector3.new(B.Diameter, B.Diameter, B.Diameter), -- canonical size; gameplay only
+		Position = L.ServeBall[Config.Match.FirstServer],
+		Transparency = 1,
+		CanCollide = false,
+		CanQuery = false,
+		CanTouch = false,
+		Parent = folder,
+	})
+	local ballVisual = makePart({
+		Name = "BallVisual",
+		Shape = Enum.PartType.Ball,
+		Size = Vector3.new(B.VisualDiameter, B.VisualDiameter, B.VisualDiameter),
+		CFrame = ball.CFrame,
+		CanCollide = false,
+		CanQuery = false,
+		CanTouch = false,
+		Parent = ball,
+	})
+	-- PLAYER SPAWN (invisible) ----------------------------------------------------------------------
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "PlayerSpawn"
+	spawn.Anchored = true
+	spawn.Neutral = true
+	spawn.Duration = 0
+	spawn.CanCollide = false
+	spawn.CanQuery = false
+	spawn.Transparency = 1
+	spawn.Size = Vector3.new(6, 1, 6)
+	spawn.CFrame = CFrame.lookAt(
+		L.PlayerStand + Vector3.new(0, 0.5, 0),
+		L.PlayerStand + Vector3.new(0, 0.5, 0) + L.PlayerFacing
+	)
+	local decal = spawn:FindFirstChildOfClass("Decal")
+	if decal then
+		decal:Destroy()
+	end
+	spawn.Parent = folder
+
+	-- COLLISION GROUPS --------------------------------------------------------------------------------
+	CollisionSetup.assign(tableModel, Config.CollisionGroups.Table)
+	CollisionSetup.assign(netModel, Config.CollisionGroups.Table)
+	CollisionSetup.assign(ball, Config.CollisionGroups.Ball)
+
+	folder.Parent = Workspace
+
+	local arena = {
+		Folder = folder,
+		Table = tableModel,
+		TableTop = top,
+		Net = netModel,
+		Ball = ball,
+		BallVisual = ballVisual,
+		PlayerSpawn = spawn,
+	}
+	ArenaBuilder.applyTableStyle(arena, Config.Table.Style)
+	ArenaBuilder.applyBallStyle(arena, Config.Ball.Style)
+	return arena
+end
+
+-- COSMETICS ------------------------------------------------------------------------------------------
+-- Both functions only touch appearance properties of Visual parts. They never resize, move or change collision.
+
+function ArenaBuilder.applyTableStyle(arena, styleName: string)
+	local style = Config.TableStyles[styleName]
+	if not style then
+		warn("[ArenaBuilder] unknown table style", styleName)
+		return false
+	end
+	for _, part in arena.Table.Visual:GetChildren() do
+		local role = part:GetAttribute("StyleRole")
+		if role == "Surface" then
+			part.Color = style.SurfaceColor
+			part.Material = style.Material
+			local tex = part:FindFirstChildOfClass("Texture")
+			if style.TextureId ~= "" then
+				tex = tex or Instance.new("Texture")
+				tex.Texture = style.TextureId
+				tex.Face = Enum.NormalId.Top
+				tex.Parent = part
+			elseif tex then
+				tex:Destroy()
+			end
+		elseif role == "Line" then
+			part.Color = style.LineColor
+		end
+	end
+	return true
+end
+
+function ArenaBuilder.applyBallStyle(arena, styleName: string)
+	local style = Config.BallStyles[styleName]
+	if not style then
+		warn("[ArenaBuilder] unknown ball style", styleName)
+		return false
+	end
+	local v = arena.BallVisual
+	v.Color = style.Color
+	v.Material = style.Material
+	v.Reflectance = style.Reflectance
+	local tex = v:FindFirstChildOfClass("Decal")
+	if tex then
+		tex:Destroy()
+	end
+	if style.TextureId ~= "" then
+		for _, face in Enum.NormalId:GetEnumItems() do
+			local d = Instance.new("Decal")
+			d.Texture = style.TextureId
+			d.Face = face
+			d.Parent = v
+		end
+	end
+	local oldTrail = v:FindFirstChildOfClass("Trail")
+	if oldTrail then
+		oldTrail:Destroy()
+		for _, a in v:GetChildren() do
+			if a:IsA("Attachment") then
+				a:Destroy()
+			end
+		end
+	end
+	if style.Trail.Enabled then
+		local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
+		local half = style.Trail.Width / 2
+		a0.Position, a1.Position = Vector3.new(0, half, 0), Vector3.new(0, -half, 0)
+		a0.Parent, a1.Parent = v, v
+		local t = Instance.new("Trail")
+		t.Attachment0, t.Attachment1 = a0, a1
+		t.Color = ColorSequence.new(style.Trail.Color)
+		t.Lifetime = style.Trail.Lifetime
+		t.Transparency = NumberSequence.new(0.2, 1)
+		t.Parent = v
+	end
+	return true
+end
+
+-- Move the ball (gameplay part and visual shell together) to `position`.
+function ArenaBuilder.moveBall(arena, position: Vector3)
+	arena.Ball.Position = position
+	arena.BallVisual.Position = position
+end
+
+-- Move the ball to where `side` serves from.
+function ArenaBuilder.placeBallForServe(arena, side: string)
+	ArenaBuilder.moveBall(arena, Config.Layout.ServeBall[side])
+end
+
+return ArenaBuilder
