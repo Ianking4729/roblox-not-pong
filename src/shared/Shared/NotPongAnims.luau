@@ -1,4 +1,5 @@
--- NotPongAnims: builds the /animate clips (Shared/NotPongAnimData: dive + get-up, shuffle footwork) into
+-- NotPongAnims: builds the /animate clips (Shared/NotPongAnimData: ready legs, shuffle / crossover / run footwork, serve
+-- toss + strike, and since 2026-11-17 the emergency save NP_SaveRight / NP_SaveLeft; the F dive clips were retired) into
 -- KeyframeSequences at runtime and registers them with KeyframeSequenceProvider, exactly like the generated ready
 -- stance. Nothing is uploaded or published (KeyframeSequenceProvider works in Studio; see docs/current-state.md).
 --

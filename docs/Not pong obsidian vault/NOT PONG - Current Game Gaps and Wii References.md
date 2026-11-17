@@ -164,7 +164,40 @@ Research sources: [[Wii Sports Resort - Table Tennis Research]].
 - For now the paddle uses clean solid colours with no surface patterns: red front rubber, black back rubber, light-tan wood and grip, black band and end cap. Front rubber, back rubber, grip, wood, and band/end cap stay independently customizable later.
 - Forehand and backhand show opposite rubber faces to the player through a genuine wrist/forearm turn of the paddle in the same hand (cursor left = backhand, right = forehand), with the existing commitment rule (locked at charge start, spin drag never flips, updated after recovery) and the Q serving posture independent.
 
+## Confirmed decisions — November 17, 2026 (click-and-flick rally)
+
+- Rally shots are click-and-flick: the cursor's position prepares the paddle (left/right, higher/lower), picks forehand (right) or backhand (left), the left/right base placement and a lower drive versus a higher arc; a fresh left-click locks the stroke, base aim and profile; a deliberate mouse flick while holding is the swing (flick timing decides contact, flick speed the power, flick direction the spin: left/right = curve to that screen side, up = topspin, down = backspin). Holding never adds power, release never swings, releasing without a flick cancels, one swing per click.
+- Movement stays fully player-controlled: nothing moves, steers or rotates the character toward the ball; the player must move into range; preparing, swinging and recovering never freeze movement.
+- Contact comes from reach and timing (a predefined hitting range from the player's real position), not paddle-hitbox alignment; the animation makes the paddle visibly meet the ball but never grants reach.
+- Serves use the flick too (Space tosses; a click locks the aim; a flick strikes).
+- The F dive and its automatic return are replaced by an emergency save inside click-and-flick: a normal reach zone and an outer emergency zone; the player still moves, commits and times the flick; entering the zone alone never hits; a save is a slower, higher defensive lob with capped power and spin; the body and paddle reach toward the contact without moving the root or adding reach; landing is followed by a 0.5 s stand-up during which movement is 80% of normal (configurable); preparing, flicking and hitting stay available; no extra cooldown, readiness or reach penalty, no stamina cost, no random success roll.
+- Rally slow motion is off until a new trigger is decided.
+
+## Confirmed decisions — November 17, 2026 (rising-ball returns)
+
+- A rally ball may be hit while rising or falling, once it has bounced once on the player's half, it is the player's turn, it is within the hitting range and the flick's timing is valid. A ball that has not bounced yet is never legal (no volleys).
+- The emergency-save zone keeps its existing rules, including only a falling ball.
+- Miss feedback on screen stays brief and distinct: flick not recognised, too early, too late, out of reach, contact made but the shot went out; detailed numbers stay in developer diagnostics.
+
+## Confirmed decisions — November 17, 2026 (mouse-only rally input experiment)
+
+- A rally-only, reversible input experiment: no click to lock; mouse movement prepares (paddle position, forehand/backhand, height, base aim) and a deliberate flick is the swing, with the preparation from just before the flick. The click-to-lock mode stays available behind a configuration switch; only one is active at a time.
+- Stroke selection stays on the mouse for this experiment (no Q/E forehand/backhand keys).
+- Serves, the Q serving posture, the emergency save and its get-up, movement, camera, bot, scoring, ball speed, reach, contact timing, power/spin mapping and shot physics stay the same, so the two modes can be compared fairly.
+
 ## Measured game facts (Studio, 2026-11-17)
+
+- With free cursor movement, a quick small sideways move (about 80-200 reference px in 50-100 ms) and a sideways flick produce the same movement shape; in synthetic tests so did 150-300 px moves in about 120 ms. Longer moves (500 px or more, or 250 ms or longer) were distinguishable: they keep moving after a flick-length measurement ends.
+- Recognising a free-cursor flick took a median 0.050-0.100 s after the hand started moving (240 down to 30 fps; 0.066 s in Play at 60 fps); every synthetic deliberate flick of 40-300 px in 40-100 ms was recognised at each frame rate.
+- With an unlocked cursor, a flick toward the screen edge stops when the cursor reaches the edge (Studio reports no relative movement then).
+
+- Allowing rising-ball contact opened the contact window 0.06-0.26 s earlier on live bot returns (four balls) and up to 0.21 s earlier (mean 0.05 s) across 18 synthetic returns; the ball's closest-approach moment and the moment it leaves reach did not change in any case.
+- On the bot's returns the ball bounced 8.6-11.6 studs inside the player's end line, so a player standing behind the line could not reach it before the bounce.
+
+- A flick detector working on elapsed time (not frames) gave the same speed and power for the same 1500 px/s flick at 30, 60 and 144 fps, ignored 240 px/s drift, +-6 px jitter and a steady 800 px/s move, and finished recognising 0.05-0.10 s after the hand started moving (synthetic input; real-mouse feel untested).
+- After the bounce on the receiver's half the ball only becomes hittable once it starts falling, so the contact window can open shortly (measured 0.075 s) before its ideal moment; a contact slightly before that is early. (That falling-only rule was replaced the same day by rising-ball returns; see the decision above.)
+- With a right-hand paddle the arm alone could not bring the blade to a backhand ball 4 studs wide of the backhand anchor (5.7 studs short); adding a limited waist turn and side bend brought it to 1.3 studs; balls near the edge of reach at chest height (~11 studs out) stayed 2.4-3.9 studs short.
+- The client remembered the opponent-hit snapshot by hit counter, which restarts every point, so a new point's serve could reuse the previous point's snapshot (a stale contact window).
 
 - On the avatar's grip the paddle's face normal runs roughly along the forearm, so turning the face toward or away from the player needs the forearm's direction to change (elbow and forearm across the body), not a twist about the forearm. The previous backhand pose still pointed the red (front) face toward the table, so the player saw the black face in both strokes. (Measured 2026-11-16.)
 - The avatar's block right hand is 3.37 x 1.01 x 3.37 studs and the paddle handle runs through its 3.37-stud depth, so the fist covers about 3.4 studs of handle around the grip point: a handle shorter than that is entirely hidden in the hand, and only the blade (and a flared throat) shows. (Measured 2026-11-16.)

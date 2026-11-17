@@ -22,6 +22,7 @@ local SETTLE_DELAY = 0.5
 local desiredStroke = "Forehand"
 local desiredPosture = 0 -- serving-posture hip yaw (radians), see setServePosture
 local current: StancePose.Controller? = nil
+local shot: any = nil -- the ShotController (click-and-flick): drives the paddle arm (StancePose arm layer)
 
 local function pose(character: Model)
 	if not character:GetAttribute("NotPongPlaced") then
@@ -46,7 +47,19 @@ local function pose(character: Model)
 	current = controller
 	controller:setStroke(desiredStroke)
 	controller:setServePosture(desiredPosture)
+	if shot and (controller :: any).setShot then
+		(controller :: any):setShot(shot)
+	end
 	controller:setActive(PlatformZone.isOn())
+end
+
+-- The paddle arm follows the shot controller's preparation, commitment and swings (StancePose arm layer). Remembered
+-- across controller restarts (respawns).
+function StanceController.attachShot(controller: any)
+	shot = controller
+	if current and (current :: any).setShot then
+		(current :: any):setShot(controller)
+	end
 end
 
 -- Request the ready pose for "Forehand" | "Backhand".

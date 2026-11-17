@@ -1,47 +1,42 @@
--- ShotFeedback (client, cosmetic and NON-authoritative): everything the player sees while charging and making a shot.
---   * Trajectory arrow    (Client/TrajectoryArrow) a glowing 3D arrow through the air: the PREDICTED flight of the shot
---                         you are charging, from the predicted paddle contact to the first predicted landing. It runs the
---                         same ShotLaunch + BallPhysics as the server with your current power (hold time) and spin (drag),
---                         so it grows with the charge, bends with sidespin and dips/floats with top/backspin. Red with
---                         NET / OUT when the shot is predicted to fail; more transparent while a release now would be WEAK.
---   * Power / Curve meter (Client/PowerMeter) power fills with hold time only; curve = spin strength.
---   * Spin dial           where you pressed: arrow = direction and strength of the actual (capped) spin.
---   * Contact timing bar  predicted clean / weak release window and a moving "now" needle; after release it shows the
---                         SERVER's verdict (CLEAN / WEAK . EARLY / WEAK . LATE / EARLY / LATE / MISS).
---   * Swing + impact      a procedural paddle swing the moment you release; an impact burst when the server confirms a hit.
---   * Charge slow motion  while the rally is slowed: a draining timer, a subtle desaturating tint, and the arrow drawn
---                         from the predicted contact point.
--- It reads the ShotController (state, power, drag, spin, window) and listens to its events; it never changes them and
--- never feeds anything back to the server. Nothing here follows the cursor as a target. Tunables: Config.Feedback.
---
--- TIMING ERROR (2026-11-15): the arrow predicts the shot you would get by releasing RIGHT NOW: the ball's position at
--- this moment (inside the contact window), the deterministic timing error of this moment (ShotLaunch timing: early =
--- across the body and long, late = the other way and low), the stretch from your stroke's anchor, and the weak-contact
--- penalty when "now" is in a weak band. So as the ball comes in the arrow swings through the error and is straightest
--- at the ideal moment. SMASH: when the contact qualifies (ShotInput.smashEligible) the arrow turns gold with "SMASH"
--- and the release plays the overhead swing.
+-- ShotFeedback (client, cosmetic and NON-authoritative): what the player sees around a CLICK-AND-FLICK shot
+-- (rewritten 2026-11-17; the charge meter, the drag dial and the "release now" arrow of hold-to-charge are gone).
+--   * Aim marker          while preparing / committed: a ring on the opponent's half where the BASE aim points (from
+--                         the cursor; locked at the click) and a post whose height shows the drive (short) .. arc (tall)
+--                         profile. It is the base aim only: power and spin are not known before the flick, and spin will
+--                         bend the real flight away from it.
+--   * Flick dial          where you clicked (the cursor is held there while committed): "FLICK" while waiting; after the
+--                         flick its arrow shows the flick's direction = the spin (up = topspin, down = backspin, sideways
+--                         = curve) and its length the spin strength.
+--   * Power / Curve       after the flick: the power the flick's speed gave and the spin strength (never during a hold:
+--                         holding adds nothing).
+--   * Contact ring        (Client/ContactRing) a hollow ring round the incoming ball whose arc completes and turns green
+--                         while a flick right now would register (replaced the accuracy bar, 2026-11-17).
+--   * Verdict text        after the flick, the SERVER's verdict (CLEAN / WEAK . EARLY / WEAK . LATE / EARLY / LATE / MISS / SAVE).
+--   * Trajectory arrow    after the flick, until the verdict: the predicted flight from the ACTUAL inputs (the flick's
+--                         power and spin, the locked aim and profile, the contact timing), computed with the same
+--                         ShotLaunch + BallPhysics as the server (so prediction and launch agree).
+--   * Impact              a burst when the server confirms a hit.
+-- It reads the ShotController and listens to its events; it never changes them and never talks to the server.
+-- Tunables: Config.Feedback.
 
-local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
-local BallPhysics = require(Shared:WaitForChild("BallPhysics"))
 local TableWorld = require(Shared:WaitForChild("TableWorld"))
-local ShotInput = require(Shared:WaitForChild("ShotInput"))
 local ShotLaunch = require(Shared:WaitForChild("ShotLaunch"))
-local StancePose = require(Shared:WaitForChild("StancePose"))
 
 local BallView = require(script.Parent:WaitForChild("BallView"))
 local FrameDriver = require(script.Parent:WaitForChild("FrameDriver"))
 local TrajectoryArrow = require(script.Parent:WaitForChild("TrajectoryArrow"))
 local PowerMeter = require(script.Parent:WaitForChild("PowerMeter"))
+local PlatformZone = require(script.Parent:WaitForChild("PlatformZone"))
+local ContactRing = require(script.Parent:WaitForChild("ContactRing"))
 
 local ShotFeedback = {}
 
-local S, FB = Config.ShotControl, Config.Feedback
-local ARROW, DIAL, TIMING, METER = FB.Arrow, FB.SpinDial, FB.Timing, FB.PowerMeter
+local S, FB, Fl, P = Config.ShotControl, Config.Feedback, Config.Flick, Config.Prep
+local DIAL, TIMING, METER, AIM = FB.SpinDial, FB.Timing, FB.PowerMeter, FB.AimMarker
 
 -- ---------- small UI helpers ----------
 
@@ -77,15 +72,14 @@ local function label(parent: Instance, name: string, text: string, size: number,
 	local l = Instance.new("TextLabel")
 	l.Name = name
 	l.BackgroundTransparency = 1
-	l.Text = text
+	l.Position = position
+	l.AnchorPoint = anchor
+	l.Size = UDim2.fromOffset(200, size + 6)
 	l.Font = Enum.Font.GothamBold
 	l.TextSize = size
 	l.TextColor3 = Color3.new(1, 1, 1)
-	l.TextStrokeColor3 = Color3.new(0, 0, 0)
-	l.TextStrokeTransparency = 0.45
-	l.Position = position
-	l.AnchorPoint = anchor
-	l.Size = UDim2.fromOffset(200, size + 4)
+	l.TextStrokeTransparency = 0.35
+	l.Text = text
 	l.Parent = parent
 	return l
 end
@@ -94,27 +88,50 @@ local function clamp01(x: number): number
 	return math.clamp(x, 0, 1)
 end
 
--- Verdict text from the SERVER's reply.
-local function describe(result: string, reason: string, offset: number?): (string?, Color3)
+-- Verdict text from the SERVER's reply: brief and distinct per cause (2026-11-17). Detailed numbers stay in the dev
+-- telemetry ([Tel] lines), never on the HUD.
+--   contact made:  SAVE! / CLEAN / WEAK . EARLY / WEAK . LATE, or CONTACT . OUT / CONTACT . NET when the shot (as the
+--                  server predicts it from the same physics) will not land on the opponent's half
+--   miss:          TOO EARLY / TOO LATE / OUT OF REACH (the server's reason); NO FLICK comes from the controller
+--                  (a commitment that ended without a recognised flick), see below
+local function describe(result: string, reason: string, offset: number?, kind: string?, land: string?): (string?, Color3)
 	local r = string.lower(reason or "")
-	if result == "clean" then
+	if (result == "clean" or result == "weak") and (land == "out" or land == "own") then
+		return "CONTACT  \u{2022}  OUT", TIMING.WeakColor
+	elseif (result == "clean" or result == "weak") and land == "net" then
+		return "CONTACT  \u{2022}  NET", TIMING.WeakColor
+	elseif (result == "clean" or result == "weak") and kind == "emergency" then
+		return "SAVE!", TIMING.SaveColor
+	elseif result == "clean" then
 		return "CLEAN", TIMING.CleanColor
 	elseif result == "weak" then
 		local early = r == "early" or (offset ~= nil and offset < 0)
 		return if early then "WEAK  \u{2022}  EARLY" else "WEAK  \u{2022}  LATE", TIMING.WeakColor
-	elseif result == "dive" then
-		return "DIVE SAVE", TIMING.CleanColor
-	elseif result == "diveMishit" then
-		return "DIVE MISHIT", TIMING.MissColor
 	elseif result == "miss" then
-		if string.find(r, "late") or string.find(r, "held past") then
-			return "LATE", TIMING.MissColor
+		if string.find(r, "late") then
+			return "TOO LATE", TIMING.MissColor
 		elseif string.find(r, "early") then
-			return "EARLY", TIMING.MissColor
+			return "TOO EARLY", TIMING.MissColor
+		elseif string.find(r, "reach") then
+			return "OUT OF REACH", TIMING.MissColor
 		end
-		return "MISS", TIMING.MissColor
+		return "MISS", TIMING.MissColor -- (no ball coming / already swung at this ball)
 	end
 	return nil, TIMING.MissColor -- "rejected": nothing to celebrate or blame
+end
+
+local function marker(name: string, parent: Instance): BasePart
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = Enum.Material.Neon
+	p.Transparency = 1
+	p.Parent = parent
+	return p
 end
 
 function ShotFeedback.start(player: Player, controller: any, extras: { impact: any? }?)
@@ -130,15 +147,12 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	screen.DisplayOrder = 5
 	screen.Parent = playerGui
 
-	-- Spin dial
-	local dial = frame(screen, "SpinDial", UDim2.fromOffset(DIAL.RadiusPixels * 2, DIAL.RadiusPixels * 2))
+	-- Flick dial (where you clicked)
+	local dial = frame(screen, "FlickDial", UDim2.fromOffset(DIAL.RadiusPixels * 2, DIAL.RadiusPixels * 2))
 	dial.Visible = false
 	local dialRing = frame(dial, "Ring", UDim2.fromScale(1, 1))
 	corner(dialRing)
 	local dialRingStroke = stroke(dialRing, 2, DIAL.IdleColor, 0.55)
-	local dialShadow = frame(dial, "Shadow", UDim2.fromScale(1.06, 1.06))
-	corner(dialShadow)
-	stroke(dialShadow, 1, Color3.new(0, 0, 0), 0.6)
 	local dialDot = frame(dial, "Dot", UDim2.fromOffset(10, 10))
 	corner(dialDot)
 	dialDot.BackgroundTransparency = 0
@@ -149,10 +163,11 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	local dialHead = frame(dial, "Head", UDim2.fromOffset(13, 13))
 	dialHead.BackgroundTransparency = 0
 	dialHead.Rotation = 45
+	local dialText = label(dial, "Prompt", "FLICK", 14, UDim2.new(0.5, 0, 1, 10), Vector2.new(0.5, 0))
 	local R = DIAL.RadiusPixels
 	local hints = {
 		label(dial, "Top", "TOP", 11, UDim2.new(0.5, 0, 0, -9), Vector2.new(0.5, 1)),
-		label(dial, "Back", "BACK", 11, UDim2.new(0.5, 0, 1, 9), Vector2.new(0.5, 0)),
+		label(dial, "Back", "BACK", 11, UDim2.new(0.5, 0, 1, 26), Vector2.new(0.5, 0)),
 		label(dial, "Left", "L", 11, UDim2.new(0, -8, 0.5, 0), Vector2.new(1, 0.5)),
 		label(dial, "Right", "R", 11, UDim2.new(1, 8, 0.5, 0), Vector2.new(0, 0.5)),
 	}
@@ -164,422 +179,209 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	hints[3].TextXAlignment = Enum.TextXAlignment.Right
 	hints[4].TextXAlignment = Enum.TextXAlignment.Left
 
-	-- Timing bar
-	local barW = TIMING.Width
-	local bar = frame(screen, "Timing", UDim2.fromOffset(barW, 50), UDim2.new(0.5, 0, 1, -TIMING.Offset), Vector2.new(0.5, 1))
-	bar.Visible = false
-	local resultLabel = label(bar, "Result", "", 22, UDim2.fromScale(0.5, 0), Vector2.new(0.5, 0))
-	resultLabel.Size = UDim2.new(1, 0, 0, 26)
+	-- Verdict text (CLEAN / WEAK / EARLY / LATE / MISS / SAVE!), shown briefly after a swing. (The old accuracy bar was
+	-- replaced by the contact ring, Client/ContactRing, on 2026-11-17.)
+	local resultLabel = label(screen, "Result", "", 24, UDim2.new(0.5, 0, 1, -TIMING.Offset), Vector2.new(0.5, 1))
+	resultLabel.Size = UDim2.fromOffset(TIMING.Width, 30)
 	resultLabel.TextTransparency = 1
 	resultLabel.TextStrokeTransparency = 1
-	local track = frame(bar, "Track", UDim2.new(1, 0, 0, 10), UDim2.new(0.5, 0, 0, 36), Vector2.new(0.5, 0.5))
-	track.BackgroundTransparency = 0.35
-	track.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
-	corner(track, 0.5)
-	local function zone(name: string, color: Color3): Frame
-		local z = frame(track, name, UDim2.fromScale(0, 1), UDim2.fromScale(0, 0.5), Vector2.new(0, 0.5))
-		z.BackgroundTransparency = 0.25
-		z.BackgroundColor3 = color
-		return z
+	local ring = ContactRing.new(screen, controller)
+	-- TEMPORARY developer indicator (Config.ShotControl.ShowInputDebug): the rally input mode, what the input is doing
+	-- now (PREPARING / SWING ONSET / SWING RECOGNIZED / RECOVERING) and the last ignored candidate or miss reason.
+	local devLabel: TextLabel? = nil
+	local devNote, devNoteUntil = "", -math.huge
+	if S.ShowInputDebug then
+		local l = label(screen, "InputModeDebug", "", 13, UDim2.new(0, 12, 1, -150), Vector2.new(0, 1))
+		l.Size = UDim2.fromOffset(360, 40)
+		l.TextXAlignment = Enum.TextXAlignment.Left
+		l.TextYAlignment = Enum.TextYAlignment.Bottom
+		l.Font = Enum.Font.Code
+		l.TextTransparency = 0.15
+		devLabel = l
 	end
-	local weakEarly = zone("WeakEarly", TIMING.WeakColor)
-	local weakLate = zone("WeakLate", TIMING.WeakColor)
-	local cleanZone = zone("Clean", TIMING.CleanColor)
-	cleanZone.BackgroundTransparency = 0.05
-	local needle = frame(bar, "Needle", UDim2.fromOffset(3, 22), UDim2.new(0, 0, 0, 36), Vector2.new(0.5, 0.5))
-	needle.BackgroundTransparency = 0
-	needle.BackgroundColor3 = Color3.new(1, 1, 1)
-	corner(needle, 0.5)
-	local releaseTick = frame(bar, "Release", UDim2.fromOffset(4, 22), UDim2.new(0, 0, 0, 36), Vector2.new(0.5, 0.5))
-	releaseTick.BackgroundTransparency = 0
-	releaseTick.BackgroundColor3 = Color3.fromRGB(170, 170, 180)
-	releaseTick.Visible = false
-	corner(releaseTick, 0.5)
-
-	-- ---------- arrow + meter ----------
+	local function note(text: string)
+		devNote, devNoteUntil = text, os.clock() + 1.5
+	end
+	-- ---------- arrow + meter + aim marker ----------
 	local arrow = TrajectoryArrow.new(playerGui)
 	local meter = PowerMeter.new(screen)
-
-	-- ---------- charge slow motion: timer + tint ----------
-	local CF = Config.ChargeFreeze
-	-- (stacked right above the Power / Curve panel, same width, so the three read as one group)
-	local freezeBar = frame(screen, "SlowMotionTimer", UDim2.fromOffset(METER.Width + 96, 40), UDim2.new(1, -24, 1, -184), Vector2.new(1, 1))
-	freezeBar.Visible = false
-	local freezeLabel = label(freezeBar, "Label", "SLOW MO", 18, UDim2.fromScale(0.5, 0), Vector2.new(0.5, 0))
-	freezeLabel.Size = UDim2.new(1, 0, 0, 20)
-	freezeLabel.TextColor3 = CF.TimerColor
-	local freezeTrack = frame(freezeBar, "Track", UDim2.new(1, 0, 0, 8), UDim2.new(0.5, 0, 0, 30), Vector2.new(0.5, 0.5))
-	freezeTrack.BackgroundTransparency = 0.35
-	freezeTrack.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
-	corner(freezeTrack, 0.5)
-	local freezeFill = frame(freezeTrack, "Fill", UDim2.fromScale(1, 1), UDim2.fromScale(0, 0.5), Vector2.new(0, 0.5))
-	freezeFill.BackgroundTransparency = 0.05
-	freezeFill.BackgroundColor3 = CF.TimerColor
-	corner(freezeFill, 0.5)
-	local tint = Instance.new("ColorCorrectionEffect")
-	tint.Name = "NotPongSlowMotionTint"
-	tint.Enabled = true
-	tint.Saturation = 0
-	tint.TintColor = Color3.new(1, 1, 1)
-	tint.Parent = Lighting -- (client-side instance: only this player sees it)
-	local tintTween: Tween? = nil
-	local function setTint(on: boolean)
-		if tintTween then
-			tintTween:Cancel()
-		end
-		local goal = if on
-			then { Saturation = CF.TintSaturation, TintColor = CF.TintColor }
-			else { Saturation = 0, TintColor = Color3.new(1, 1, 1) }
-		tintTween = TweenService:Create(tint, TweenInfo.new(CF.TintFadeTime, Enum.EasingStyle.Quad), goal)
-		;(tintTween :: Tween):Play()
-	end
+	local markers = Instance.new("Folder")
+	markers.Name = "NotPongAimMarker"
+	markers.Parent = workspace.CurrentCamera
+	local aimRing = marker("AimRing", markers)
+	aimRing.Shape = Enum.PartType.Cylinder
+	aimRing.Size = Vector3.new(0.08, AIM.RingRadius * 2, AIM.RingRadius * 2)
+	local aimPost = marker("AimPost", markers)
 
 	-- ---------- state ----------
 	local path: { Vector3 } = {}
-	local prediction: { kind: string, contact: Vector3 }? = nil
-	local predictKey = ""
-	local nextPredictAt = -math.huge
+	local prediction: { kind: string, contact: Vector3, launch: any }? = nil
 	local meterUntil = -math.huge
 	local resultUntil = -math.huge
-	local frozenWindow: ShotInput.Window? = nil -- the window at release, kept to draw the verdict
-	local releasedAt: number? = nil -- server time of release (client estimate)
-	local lastPredictCost = 0
-	local lastPredTop, lastPredSide = 0, 0 -- the spin the arrow's last prediction used
+	local dialUntil = -math.huge
+			local dialAt = Vector2.zero
+	local lastSwing: any = nil
 
-	-- ---------- swing + impact (events from the controller) ----------
-	-- Confirmed charge slow motion: where "release now" falls on the SLOWED timeline, relative to the ideal moment
-	-- (simulation seconds; negative = early). The server judges the release there (simRelease vs the contact window).
-	local function slowMotionOffset(): number?
-		local f = controller.freeze
-		if not f then
-			return nil
-		end
-		return -((f.strikeIn or 0) - (os.clock() - BallView.getInfo().received) * Config.ChargeFreeze.TimeScale)
-	end
-	local function estimateQuality(): string
-		if controller.freeze then
-			-- (2026-11-16 pass 3: was the quality the server estimated when slow motion BEGAN, so a release still before the
-			-- window opened showed a clean, safe arrow and then missed) judge "release now" on the slowed timeline
-			local w = controller.window
-			local off = slowMotionOffset()
-			if not w or not off then
-				return controller.freeze.q
-			end
-			local half = S.ContactWindowDuration / 2
-			if off < w.enter - w.ideal or off > w.exit - w.ideal then
-				return "miss"
-			elseif math.abs(off) <= half then
-				return "clean"
-			elseif (off < 0 and -off <= half + S.EarlyReleaseTolerance) or (off > 0 and off <= half + S.LateReleaseTolerance) then
-				return "weak"
-			end
-			return "miss"
-		elseif controller.freezePredicted then
-			return "clean"
-		end
-		local w = controller.window
-		if not w then
-			return "miss"
-		end
-		local now = workspace:GetServerTimeNow()
-		local off = now - w.ideal
-		local half = S.ContactWindowDuration / 2
-		if now < w.enter or now > w.exit then
-			return "miss"
-		elseif w.cleanStart then -- a serve's contact phase: clean in the middle, weak at the edges (both legal)
-			return if now >= w.cleanStart and now <= w.cleanEnd then "clean" else "weak"
-		elseif math.abs(off) <= half then
-			return "clean"
-		elseif (off < 0 and -off <= half + S.EarlyReleaseTolerance) or (off > 0 and off <= half + S.LateReleaseTolerance) then
-			return "weak"
-		end
-		return "miss"
+	local function showVerdict(text: string, color: Color3)
+		resultLabel.Text = text
+		resultLabel.TextColor3 = color
+		resultLabel.TextTransparency = 0
+		resultLabel.TextStrokeTransparency = 0.35
+		resultUntil = os.clock() + TIMING.ResultShowTime
 	end
 
-	local currentSmash = false -- the arrow's latest prediction is a smash (drives the overhead swing on release)
+	local committedLive = false -- the current commitment was made in a live rally (not your serve)
 	controller.on(function(event: string, data: any)
-		if event == "slowMotion" then
-			setTint(data.active) -- (rally charge slow motion only: nothing slows a serve)
-		elseif event == "dive" then
-			-- the server resolved our dive's automatic contact
-			local text, color = describe(data.result, data.reason, nil)
-			if text then
-				resultLabel.Text = text
-				resultLabel.TextColor3 = color
-				resultLabel.TextTransparency = 0
-				resultLabel.TextStrokeTransparency = 0.35
-				resultUntil = os.clock() + TIMING.ResultShowTime
-			end
-			if impactFx and typeof(data.contact) == "Vector3" then
-				impactFx.play(data.contact, if data.result == "dive" then "clean" else "weak")
-			end
-		elseif event == "cancel" or event == "reset" then
-			arrow.hide()
-		elseif event == "release" then
-			arrow.hide() -- the real ball takes over (its trail shows the actual flight)
-			meterUntil = os.clock() + METER.ShowAfterRelease
-			frozenWindow = controller.window
-			releasedAt = workspace:GetServerTimeNow()
-			releaseTick.BackgroundColor3 = Color3.fromRGB(170, 170, 180)
+		if event == "commit" then
+			dialAt = game:GetService("UserInputService"):GetMouseLocation()
 			resultLabel.TextTransparency = 1
 			resultLabel.TextStrokeTransparency = 1
-			-- Instant, local swing: strength from the client's estimate (visual only; the server decides the hit).
-			local q = data.quality or estimateQuality()
-			local strength = if q == "clean" then Config.Swing.CleanStrength elseif q == "weak" then Config.Swing.WeakStrength else Config.Swing.MissStrength
-			local character = player.Character
-			if character and data.serve then
-				-- the serve strike is played by the serve controller (it continues from the toss's cocked pose)
-			elseif character then
-				-- The server judges the release moment on its slowed simulation timeline.
-				local delay = math.max((data.strikeDelay or 0) - Config.Swing.Duration * 0.4, 0)
-				local kind = if currentSmash and q ~= "miss" then "Smash" else nil
-				if delay > 0 then
-					task.delay(delay, StancePose.playSwing, character, strength, data.stroke, kind)
-				else
-					StancePose.playSwing(character, strength, data.stroke, kind)
+			committedLive = not data.serve and data.incoming == true -- (also set per frame once a ball comes during the hold)
+		elseif event == "cancel" or event == "reset" then
+			if controller.state == STATE.IDLE then
+				arrow.hide()
+				prediction = nil
+			end
+			-- NO FLICK: a commitment against a live ball ended without a recognised flick (released, or the point ended
+			-- while holding). Only "cancel" (fired after the reset) carries the cause; deliberate cancels stay silent.
+			if event == "cancel" and committedLive then
+				committedLive = false
+				local why = data and data.why
+				if why == "released without a flick" or why == "point reset" then
+					showVerdict("NO FLICK", TIMING.MissColor)
+				end
+			end
+		elseif event == "candidate" then
+			note("IGNORED: " .. tostring(data and data.outcome))
+		elseif event == "swing" then
+			committedLive = false
+			if not data.serve then
+				note(("flick power %d%%"):format(math.floor((data.power or 0) * 100 + 0.5)))
+			end
+			lastSwing = data
+			meterUntil = os.clock() + METER.ShowAfterRelease
+			dialUntil = os.clock() + METER.ShowAfterRelease
+			resultLabel.TextTransparency = 1
+			resultLabel.TextStrokeTransparency = 1
+			prediction = nil
+			arrow.hide()
+			-- the predicted flight from the actual inputs (the same shared launch as the server's)
+			if not data.serve and data.quality ~= "miss" and data.contact then
+				local ok, launch = pcall(controller.predictLaunch)
+				if ok and launch then
+					local res = ShotLaunch.predictPath(data.contact, launch.velocity, launch.spin, path, 2)
+					prediction = { kind = res.kind, contact = data.contact, launch = launch }
+					arrow.set(path, res.kind, false)
+					arrow.setSmash(launch.how and string.find(launch.how, "smash") ~= nil or false)
+					arrow.setWeak(data.quality == "weak")
 				end
 			end
 		elseif event == "result" then
-			local text, color = describe(data.result, data.reason, data.offset)
+			local text, color = describe(data.result, data.reason, data.offset, data.kind, data.msg and data.msg.land)
+			if not text and data.result == "rejected" and lastSwing and not lastSwing.serve and lastSwing.quality == "miss" then
+				-- the server could not judge (the point had already ended when the flick arrived, typically a very late
+				-- flick): show the client's own timing verdict for that flick (TOO LATE / TOO EARLY / OUT OF REACH)
+				text, color = describe("miss", lastSwing.reason, nil, nil, nil)
+			end
 			if text then
-				resultLabel.Text = text
-				resultLabel.TextColor3 = color
-				resultLabel.TextTransparency = 0
-				resultLabel.TextStrokeTransparency = 0.35
-				releaseTick.BackgroundColor3 = color
-				resultUntil = os.clock() + TIMING.ResultShowTime
+				showVerdict(text, color)
+				if data.result == "miss" or data.result == "rejected" then
+					note("MISS: " .. text .. "  (" .. tostring(data.reason) .. ")")
+				else
+					note(text)
+				end
 			end
 			if impactFx and (data.result == "clean" or data.result == "weak") then
-				local ball = BallView.getState()
-				if ball then
-					impactFx.play(ball.position, data.result)
+				local msg = data.msg
+				local at = (msg and typeof(msg.contact) == "Vector3" and msg.contact) or (BallView.getState() and BallView.getState().position)
+				if at then
+					impactFx.play(at, data.result)
 				end
 			end
+			-- the real ball takes over now (its trail shows the actual flight)
+			task.delay(0.15, function()
+				if controller.state ~= STATE.SWUNG then
+					arrow.hide()
+				end
+			end)
 		end
 	end)
-
-	-- ---------- prediction ----------
-	-- The shot you would play if you released NOW: same ShotLaunch (timing error, stretch, weak penalty, smash) +
-	-- BallPhysics as the server's playerLaunch.
-	local function predict(contact: Vector3, power: number, top: number, side: number, quality: string, offset: number?, smash: boolean)
-		local a = controller.anchor()
-		local opts: ShotLaunch.Options = {
-			stroke = controller.stroke,
-			timing = if offset then ShotInput.timingValue(offset) else nil,
-			stretch = if a then Vector2.new(contact.X - a.X, contact.Z - a.Z).Magnitude / S.PaddleReach else 0,
-			smash = smash,
-		}
-		if quality == "weak" and not smash then
-			top, side = top * S.WeakSpinFactor, side * S.WeakSpinFactor
-			opts.speedFactor = S.WeakSpeedFactor
-		end
-		local launch = ShotLaunch.compute(contact, power, top, side, opts)
-		local result = ShotLaunch.predictPath(contact, launch.velocity, launch.spin, path, 2)
-		-- HONESTY (2026-11-16 pass 3): a landing that only works for this exact instant is not shown as safe. If the same
-		-- shot released ARROW.TimingLookahead later (about a frame or two of reaction) would fail, or the landing is within
-		-- ARROW.EdgeMargin of a table edge / the net line, the arrow turns amber and says RISKY.
-		local kind = result.kind
-		if kind == "ok" then
-			local risky = false
-			local land = result.position
-			local c = TableWorld.center
-			local toward = TableWorld.towardSide("Bot")
-			local depth = (land.Z - c.Z) * toward -- studs past the net on the opponent's half
-			local margin = math.min(TableWorld.halfWidth - math.abs(land.X - c.X), TableWorld.halfLength - depth, depth)
-			if margin < (ARROW.EdgeMargin or 0) then
-				risky = true
-			elseif offset ~= nil and (ARROW.TimingLookahead or 0) > 0 then
-				local later = table.clone(opts)
-				later.timing = ShotInput.timingValue(offset + ARROW.TimingLookahead)
-				local l2 = ShotLaunch.compute(contact, power, top, side, later)
-				if ShotLaunch.predictPath(contact, l2.velocity, l2.spin, nil, 2).kind ~= "ok" then
-					risky = true
-				end
-			end
-			if risky then
-				kind = "risky"
-			end
-		end
-		return {
-			kind = kind,
-			contact = contact,
-			smash = smash,
-			yaw = launch.yawError,
-			pitch = launch.pitchError,
-			offset = offset,
-			stretch = opts.stretch,
-			risk = launch.risk,
-			at = workspace:GetServerTimeNow(),
-		}
-	end
-
-	-- Where the ball will be at server time `t`, from the latest server snapshot (the same input the server judges with).
-	-- The incoming flight is simulated ONCE per snapshot (one position per physics tick) and then looked up, so the arrow
-	-- can re-predict often without re-simulating the incoming ball every time.
-	local trajSnap: any = nil
-	local trajPositions: { Vector3 } = {}
-	local function ballAt(t: number): Vector3?
-		local snap = BallView.getSnapshot()
-		if not snap then
-			return nil
-		end
-		local step = TableWorld.physics.fixedStep
-		if trajSnap ~= snap then
-			trajSnap = snap
-			table.clear(trajPositions)
-			local s = BallPhysics.copyState(snap.state)
-			s.resting = false
-			trajPositions[1] = s.position
-			for i = 2, math.floor(1.5 / step) do
-				BallPhysics.tick(s, TableWorld.physics, TableWorld.world)
-				trajPositions[i] = s.position
-				if s.resting then
-					break
-				end
-			end
-		end
-		local i = math.clamp(math.floor((t - snap.t) / step + 0.5) + 1, 1, #trajPositions)
-		return trajPositions[i]
-	end
-
-	-- ---------- TEMPORARY input debug overlay (Config.ShotControl.ShowInputDebug) ----------
-	-- Traces the whole pipeline from the button to the arrow, refreshed ~8 times a second (no per-frame text spam).
-	local debugLabel: TextLabel? = nil
-	local nextDebugAt = 0
-	--[[
-	if S.ShowInputDebug then
-		local l = Instance.new("TextLabel")
-		l.Name = "InputDebug"
-		l.BackgroundColor3 = Color3.new(0, 0, 0)
-		l.BackgroundTransparency = 0.45
-		l.TextColor3 = Color3.fromRGB(190, 255, 200)
-		l.Font = Enum.Font.Code
-		l.TextSize = 14
-		l.TextXAlignment = Enum.TextXAlignment.Left
-		l.TextYAlignment = Enum.TextYAlignment.Top
-		l.AnchorPoint = Vector2.new(0, 0)
-		l.Position = UDim2.fromOffset(10, 190)
-		l.Size = UDim2.fromOffset(330, 150)
-		l.Text = ""
-		l.Parent = screen
-		debugLabel = l
-	end
-	]]
-	local function updateInputDebug(now: number)
-		local l = debugLabel
-		if not l or now < nextDebugAt then
-			return
-		end
-		nextDebugAt = now + 0.12
-		local m = controller.lastMove
-		local d = controller.dragOverride or controller.drag
-		l.Text = ("INPUT DEBUG (temporary)\nbutton held : %s\nstate        : %s\nmouse events : %d total, %d this charge\nlast move    : (%+.0f, %+.0f) via %s\ndrag (accum) : (%+.0f, %+.0f)\nspin         : top %+.0f  side %+.0f\nmeter        : power %.2f  curve %.2f\narrow spin   : top %+.0f  side %+.0f"):format(
-			tostring(controller.buttonDown), tostring(controller.state), controller.moveEvents, controller.chargeMoveEvents,
-			m.X, m.Y, tostring(controller.moveSource), d.X, d.Y, controller.topspin, controller.sidespin,
-			meter.powerFill.Size.X.Scale, meter.curveFill.Size.X.Scale, lastPredTop, lastPredSide)
-	end
 
 	-- ---------- per-frame update ----------
 	FrameDriver.bind("NotPongShotFeedback", Enum.RenderPriority.Last.Value - 10, function(dt)
 		local state = controller.state
-		local charging = state == STATE.CHARGING
-		local released = state == STATE.SWING_RELEASED or state == STATE.CONTACT_RESOLVED or state == STATE.RECOVERY
+		local committed = state == STATE.COMMITTED
+		local swung = state == STATE.SWUNG or state == STATE.CONTACT_RESOLVED or state == STATE.RECOVERY
 		local nowClock = os.clock()
 		local serverNow = workspace:GetServerTimeNow()
-		local w: ShotInput.Window? = controller.window
-		local aiming = state == STATE.IDLE and w ~= nil -- a ball is coming and we could start charging
-		local freeze = controller.freeze
-		local frozenNow = charging and (freeze ~= nil or controller.freezePredicted)
-
-		-- Trajectory arrow: while charging at a reachable incoming ball. During confirmed slow motion it starts from the
-		-- server's predicted contact point; otherwise it starts from our contact window.
-		local power = controller.power()
-		local top, side = controller.topspin, controller.sidespin
-		local contactAt: Vector3? = nil
-		local offset: number? = nil -- release-now timing relative to the ideal moment (seconds; nil = none)
-		if controller.serving then
-			-- a serve: no predicted path (the aim line shows the direction only; where it lands is up to the inputs)
-			arrow.hide()
-		elseif charging and freeze then
-			contactAt = freeze.at
-			-- confirmed slow motion: "release now" on the slowed timeline (early or late of the ideal moment)
-			offset = slowMotionOffset()
-		elseif charging and w and (frozenNow or serverNow <= (w :: ShotInput.Window).exit) then
-			local win = w :: ShotInput.Window
-			if frozenNow then
-				contactAt = win.idealPosition -- (slow motion predicted, not confirmed yet)
-			else
-				contactAt = ballAt(math.clamp(serverNow, win.enter, win.exit)) or win.idealPosition
-				offset = serverNow - win.ideal
-			end
+		local info = BallView.getInfo()
+		local live = BallView.getState() ~= nil and info.mode == "free"
+		local w = controller.window
+		local ow = controller.outerWindow
+		local emergencyNow = w == nil and ow ~= nil
+		if committed and not controller.serving and live and info.incoming and not info.serve then
+			committedLive = true -- (a ball came to you while you held the commitment: NO FLICK applies if it ends unflicked)
 		end
-		if contactAt then
-			local c = contactAt :: Vector3
-			local quality = estimateQuality()
-			local smash = ShotInput.smashEligible(c, power) and quality ~= "miss"
-			local key = ("%d|%d,%d|%.2f,%.2f,%.2f|%s|%s|%d"):format(
-				math.floor(power * 200 + 0.5),
-				math.floor(top / 2 + 0.5),
-				math.floor(side / 2 + 0.5),
-				c.X,
-				c.Y,
-				c.Z,
-				quality,
-				tostring(smash),
-				if offset then math.floor(offset * 100 + 0.5) else 9999
-			)
-			if key ~= predictKey and nowClock >= nextPredictAt then
-				predictKey = key
-				local t0 = os.clock()
-				prediction = predict(c, power, top, side, quality, offset, smash)
-				lastPredTop, lastPredSide = top, side
-				-- Adaptive budget: a slow prediction pushes the next one back in proportion (never eats the frame rate).
-				lastPredictCost = os.clock() - t0
-				nextPredictAt = nowClock + math.max(ARROW.RecomputeInterval, lastPredictCost * 3)
-				arrow.set(path, (prediction :: any).kind, false)
-				arrow.setSmash(smash)
-				currentSmash = smash
-			end
-			arrow.setWeak(quality == "weak" or quality == "miss")
-			arrow.step(dt)
+
+		-- Aim marker: the base aim on the opponent's half while preparing / committed in a live rally (not your serve:
+		-- the serve has its own aim line).
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local showAim = live and not info.serve and not controller.serving and PlatformZone.isOn() and root ~= nil and (state == STATE.IDLE or committed)
+		if showAim then
+			local depth = math.clamp((S.MinShotDepth + S.MaxShotDepth) / 2 + P.DriveDepthBonus + (P.ArcDepthBonus - P.DriveDepthBonus) * controller.profile, 0.2, 0.92)
+			local spot = TableWorld.pointOnHalf("Bot", depth, ShotLaunch.aimLateral(controller.aim, "Player"))
+			local y = Config.Layout.SurfaceY + 0.06
+			local color = if committed then AIM.LockedColor else AIM.Color
+			aimRing.CFrame = CFrame.new(spot.X, y, spot.Z) * CFrame.Angles(0, 0, math.rad(90))
+			aimRing.Color = color
+			aimRing.Transparency = if committed then 0.2 else 0.45
+			local h = AIM.PostMin + (AIM.PostMax - AIM.PostMin) * controller.profile
+			aimPost.Size = Vector3.new(0.18, h, 0.18)
+			aimPost.CFrame = CFrame.new(spot.X, y + h / 2, spot.Z)
+			aimPost.Color = color
+			aimPost.Transparency = if committed then 0.3 else 0.55
 		else
+			aimRing.Transparency, aimPost.Transparency = 1, 1
+		end
+
+		-- Arrow: shown from the flick until the verdict (set by the "swing" event); step its easing.
+		if prediction and swung then
+			arrow.step(dt)
+		elseif not swung then
 			if prediction then
 				prediction = nil
-				predictKey = ""
 			end
-			currentSmash = false
 			arrow.hide()
 		end
 
-		-- Power / curve meter: while charging, and briefly after the release (held at the released power).
-		local curve = math.sqrt(top * top + side * side) / S.MaxSpin
-		if charging then
-			meter.set(true, power, curve)
-		elseif nowClock < meterUntil then
-			meter.set(true, controller.releasedPower, curve)
+		-- Power / curve: after the flick only.
+		local curve = math.sqrt(controller.topspin ^ 2 + controller.sidespin ^ 2) / math.max(S.MaxSpin, 1e-3)
+		if nowClock < meterUntil and lastSwing then
+			meter.set(true, controller.power, curve)
 		else
 			meter.set(false, 0, 0)
 		end
 
-		updateInputDebug(nowClock)
-
-		-- Spin dial
-		dial.Visible = charging
-		if charging then
-			local ds: Vector2 = controller.dragStart
-			dial.Position = UDim2.fromOffset(ds.X, ds.Y)
-			local n = clamp01(curve)
-			if n < 0.02 then
+		-- Flick dial
+		local showDial = committed or nowClock < dialUntil
+		dial.Visible = showDial
+		if showDial then
+			dial.Position = UDim2.fromOffset(dialAt.X, dialAt.Y)
+			local flicked = controller.flick ~= nil
+			dialText.Text = if flicked then ("%d%%"):format(math.floor(controller.power * 100 + 0.5)) else "FLICK"
+			local n = if flicked then clamp01(curve) else 0
+			if not flicked or n < 0.02 then
 				dialArrow.Visible, dialHead.Visible = false, false
 				dialDot.BackgroundColor3 = DIAL.IdleColor
-				dialRingStroke.Color = DIAL.IdleColor
-				dialRingStroke.Transparency = 0.6
+				dialRingStroke.Color = if committed then DIAL.HighColor else DIAL.IdleColor
+				dialRingStroke.Transparency = if committed then 0.25 else 0.6
 				dialRingStroke.Thickness = 2
 				dialDot.Size = UDim2.fromOffset(10, 10)
 			else
-			local color = DIAL.LowColor:Lerp(DIAL.HighColor, n)
+				local color = DIAL.LowColor:Lerp(DIAL.HighColor, n)
 				local len = R * n
-				local ang = math.atan2(-top, -side) -- screen direction of the drag: x = -side, y = -top (y grows downward)
+				-- screen direction of the flick = the spin: x = -sidespin, y = -topspin (screen y grows downward)
+				local ang = math.atan2(-controller.topspin, -controller.sidespin)
 				dialArrow.Visible, dialHead.Visible = true, true
 				dialArrow.Rotation = math.deg(ang)
 				dialArrow.Size = UDim2.fromOffset(len, 3 + 3 * n)
@@ -594,75 +396,35 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 			end
 		end
 
-		-- Slow-motion timer (replaces the timing bar while the player is charging near contact)
-		freezeBar.Visible = frozenNow
-		if frozenNow then
-			local left = if freeze then math.clamp((freeze.ends - serverNow) / CF.MaxDuration, 0, 1) else 1
-			freezeFill.Size = UDim2.fromScale(left, 1)
-			local color = if left < 0.3 then CF.TimerLowColor else CF.TimerColor
-			freezeFill.BackgroundColor3 = color
-			freezeLabel.TextColor3 = color
-			freezeLabel.Text = if left < 0.3 then "RELEASE!" else "SLOW MO"
+		if devLabel then
+			local mode = if controller.rallyInput == "MouseOnly" then "MOUSE-ONLY" else "CLICK-TO-LOCK"
+			local now
+			if state == STATE.IDLE then
+				if controller.candidate then
+					now = "SWING ONSET..."
+				elseif controller.armed then
+					now = if controller.inZone then "PREPARING  (swing zone)" else "PREPARING  (ball coming)"
+				else
+					now = "PREPARING"
+				end
+			elseif committed then
+				now = if controller.serving then "SERVE: FLICK" else "LOCKED: FLICK"
+			elseif state == STATE.SWUNG then
+				now = "SWING RECOGNIZED"
+			else
+				now = "RECOVERING"
+			end
+			devLabel.Text = ("[dev] rally input %s\n%s%s"):format(mode, now, if nowClock < devNoteUntil then "   |   " .. devNote else "")
 		end
 
-		-- Contact timing bar
-		local showBar = false
-		if not released and nowClock >= resultUntil then
-			frozenWindow = nil
-		end
-		local win = if frozenWindow and (released or nowClock < resultUntil) then frozenWindow else w
-		if win and (aiming or charging or released) then
-			showBar = true
-		end
-		if nowClock < resultUntil and win then
-			showBar = true
-		end
-		if frozenNow then
-			showBar = false -- the slow-motion countdown replaces the contact timing bar
-		end
-		bar.Visible = showBar
-		if showBar and win then
-			local span = TIMING.SecondsBefore + TIMING.SecondsAfter
-			local function x(t: number): number
-				return clamp01((t - win.ideal + TIMING.SecondsBefore) / span)
-			end
-			local half = S.ContactWindowDuration / 2
-			local cs, ce = math.max(win.ideal - half, win.enter), math.min(win.ideal + half, win.exit)
-			local es = math.max(win.ideal - half - S.EarlyReleaseTolerance, win.enter)
-			local le = math.min(win.ideal + half + S.LateReleaseTolerance, win.exit)
-			if win.cleanStart then -- a serve's contact phase (ServeRules.phase): weak edges, clean middle
-				cs, ce, es, le = win.cleanStart, win.cleanEnd, win.enter, win.exit
-			end
-			local function place(z: Frame, a: number, b: number)
-				local xa, xb = x(a), x(b)
-				z.Position = UDim2.fromScale(xa, 0.5)
-				z.Size = UDim2.fromScale(math.max(xb - xa, 0), 1)
-				z.Visible = b > a
-			end
-			place(weakEarly, es, cs)
-			place(cleanZone, cs, ce)
-			place(weakLate, ce, le)
-			local nowX = x(serverNow)
-			needle.Position = UDim2.new(nowX, 0, 0, 36)
-			needle.Visible = not released or nowClock < resultUntil
-			needle.BackgroundTransparency = if serverNow < win.ideal - TIMING.SecondsBefore then 0.7 else 0
-			if releasedAt then
-				releaseTick.Visible = released or nowClock < resultUntil
-				releaseTick.Position = UDim2.new(x(releasedAt), 0, 0, 36)
-			end
-		end
 		if nowClock >= resultUntil and resultLabel.TextTransparency < 1 then
 			resultLabel.TextTransparency = 1
 			resultLabel.TextStrokeTransparency = 1
 		end
-		if not released and not (nowClock < resultUntil) then
-			releaseTick.Visible = false
-			releasedAt = nil
-		end
 	end)
 
 	if S.ShowDiagnostics then
-		-- Development-only bridge for Studio test scripts: what the arrow and the meter currently show.
+		-- Development-only bridge for Studio test scripts: what the arrow, the meter and the aim marker currently show.
 		local bridge = Instance.new("BindableFunction")
 		bridge.Name = "NotPongArrowDebug"
 		bridge.OnInvoke = function()
@@ -672,20 +434,23 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 				visible = arrow.isVisible(),
 				kind = prediction and prediction.kind,
 				contact = prediction and prediction.contact,
-				smash = prediction and prediction.smash,
-				yaw = prediction and prediction.yaw,
-				pitch = prediction and prediction.pitch,
-				offset = prediction and prediction.offset,
-				stretch = prediction and prediction.stretch,
-				risk = prediction and prediction.risk,
-				age = prediction and (workspace:GetServerTimeNow() - prediction.at),
-				path = pts, -- the latest simulated path (contact ... first contact)
+				velocity = prediction and prediction.launch and prediction.launch.velocity,
+				spin = prediction and prediction.launch and prediction.launch.spin,
+				solve = prediction and prediction.launch and prediction.launch.how,
+				path = pts,
 				shownTip = shown[#shown],
 				shownCount = #shown,
-				predictCost = lastPredictCost,
 				meterVisible = meter.panel.Visible,
 				meterPower = meter.powerFill.Size.X.Scale,
 				meterCurve = meter.curveFill.Size.X.Scale,
+				aimVisible = aimRing.Transparency < 1,
+				aimPosition = aimRing.Position,
+				aimPostHeight = aimPost.Size.Y,
+				dialVisible = dial.Visible,
+				dialText = dialText.Text,
+				ringVisible = ring.debug().visible,
+				ring = ring.debug(),
+				resultText = resultLabel.Text,
 			}
 		end
 		bridge.Parent = player

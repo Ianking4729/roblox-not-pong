@@ -9,9 +9,10 @@
 --   * Space: tosses (the request; the toss clip plays at Config.Serve.TossAnimSpeed and releases the ball at its Release
 --     marker, the same moment the server releases it). Space never jumps while it is your serve. From then on the server
 --     holds you in place until the serve resolves. Everything runs at normal speed (no serve slow motion).
---   * The strike is the normal shot input (ShotController): a FRESH left-click after the toss locks the aim and charges;
---     drag = spin; release = swing (forehand: the serve strike clip from the cocked pose; backhand: the backhand swing).
---     The timing bar shows the toss's contact phase; a contact inside it is a legal serve.
+--   * The strike is the normal shot input (ShotController, CLICK-AND-FLICK since 2026-11-17): a FRESH left-click after
+--     the toss locks the aim; a FLICK while holding strikes (flick speed = power, direction = spin; forehand: the serve
+--     strike clip from the cocked pose; backhand: the backhand swing). Releasing without a flick cancels (click again
+--     while the toss is still up). The timing bar shows the toss's contact phase; a contact inside it is a legal serve.
 -- Visual only besides the two requests; nothing here decides anything.
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -41,7 +42,9 @@ function ServeInput.attachShotController(controller: any)
 	controller.on(function(event: string, data: any)
 		if event == "serveAim" then
 			aimLocked = data.aim
-		elseif event == "release" and data.serve then
+		elseif event == "cancel" and controller.serving == false and aimLocked ~= nil and BallView.getInfo().serve then
+			aimLocked = nil -- released without a flick: the aim follows the cursor again until the next click
+		elseif event == "swing" and data.serve then
 			strikeAt = os.clock()
 			ServeInput._strike(data.stroke)
 		end
@@ -295,14 +298,15 @@ function ServeInput.start()
 		end
 
 		-- aim cue on the table: a line from the hand to the second-bounce target ring; follows the cursor until the press
-		-- locks it, and the ring's depth follows the charge (power = pace = depth). A placement cue, not a predicted path.
+		-- locks it; the ring sits at a nominal depth until the flick sets the power. A placement cue, not a predicted path.
 		local showAim = mine and root ~= nil and character ~= nil and (ready or tossing) and (inHand or tossInAir)
 		if showAim and root and character then
 			local aim = aimLocked
 			if aim == nil then
 				aim = if shot and shot.pointerAim then shot.pointerAim() else 0
 			end
-			local power = if shot and shot.serving and shot.state == "CHARGING" then shot.power() else 0.5
+			-- the ring's depth: a nominal pace until the flick decides the power (then the flick's power)
+			local power = if shot and shot.flick then shot.power else 0.5
 			local from = ServeRules.handPoint(root.CFrame, character:GetScale(), "release", lockedPosture or posture)
 			from = Vector3.new(from.X, Config.Layout.SurfaceY + 0.06, from.Z)
 			local target = ServeRules.target(aim, power)
@@ -337,7 +341,9 @@ function ServeInput.start()
 				text, color = "Can't serve from here: " .. why, S.RegionBadColor
 			end
 		elseif tossInAir and not aimLocked then
-			text, color = "Click and hold to charge, drag for spin, release to strike", S.AimColor
+			text, color = "Click and hold to lock the aim, then flick the mouse to strike (speed = power, direction = spin)", S.AimColor
+		elseif tossInAir and aimLocked then
+			text, color = "Flick now!", S.AimLockedColor
 		end
 		label.Text, label.TextColor3 = text, color
 	end)

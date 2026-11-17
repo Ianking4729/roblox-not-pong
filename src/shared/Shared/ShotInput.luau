@@ -1,12 +1,14 @@
 --!strict
--- ShotInput: the pure rules behind the player's shot controls (HOLD TO CHARGE + DRAG TO CURVE -> RELEASE -> CONTACT).
--- Shared so the client (instant feedback, the trajectory arrow) and the server (authoritative judgement) compute the
--- SAME answers from the same numbers. No Instances, no input, no networking.
---   * dragToSpin / clampDrag: accumulated mouse drag (pixels) -> topspin / sidespin (rad/s), normalised curve, clamped
+-- ShotInput: the pure rules behind the player's shot controls (CLICK-AND-FLICK, 2026-11-17: prepare with the cursor,
+-- hold left-click to commit, flick to strike). Shared so the client (instant feedback, prediction) and the server
+-- (authoritative judgement) compute the SAME answers from the same numbers. No Instances, no input, no networking.
+--   * prep: cursor screen position -> stroke, base aim, drive/arc profile, paddle preparation (u, v)
+--   * flickShot / validateFlick: a recognised flick (Shared/FlickGesture) -> power + spin; the server's input checks
 --   * contactWindow: simulates the incoming ball with the real BallPhysics and finds when it is within paddle reach
 --     (after its bounce on the player's half): enter, ideal (closest to the paddle), exit
---   * classify: release time vs that window -> "clean" | "weak" | "miss"
--- Power (hold time) and the launch itself live in ShotLaunch. Nothing here reads the cursor position.
+--   * classify: contact time (flick start + Flick.ContactDelay) vs that window -> "clean" | "weak" | "miss"
+--   * emergencyReach: the outer save ring (Config.Emergency)
+-- The launch itself lives in ShotLaunch.
 
 local Config = require(script.Parent:WaitForChild("Config"))
 local BallPhysics = require(script.Parent:WaitForChild("BallPhysics"))
@@ -19,7 +21,24 @@ export type Window = {
 	ideal: number,
 	exit: number,
 	idealPosition: Vector3,
+	-- an EARLIER in-reach pass of the same ball (a high bounce: in reach on the way up, above the height band at the
+	-- apex, in reach again on the way down). classify judges a contact inside it against it; nil when there was none.
+	earlier: Window?,
 }
+
+-- Shift a window (and its earlier pass) by `dt` seconds (relative <-> absolute times).
+function ShotInput.shiftWindow(w: Window?, dt: number): Window?
+	if not w then
+		return nil
+	end
+	return {
+		enter = w.enter + dt,
+		ideal = w.ideal + dt,
+		exit = w.exit + dt,
+		idealPosition = w.idealPosition,
+		earlier = ShotInput.shiftWindow(w.earlier, dt),
+	}
+end
 
 -- The paddle reach anchor: in front of the character's root and to its right (FOREHAND, same rule as the bot's
 -- Striker), or mirrored to its left for a BACKHAND (`stroke` = "Backhand" uses settings.BackhandAnchorRight).
@@ -36,37 +55,10 @@ function ShotInput.anchor(rootCFrame: CFrame, settings: any, stroke: string?): V
 	return rootCFrame.Position + right.Unit * side + fwd.Unit * settings.AnchorForward
 end
 
--- DIVES (Config.Movement.Dive*). Which dive a horizontal direction is, relative to the court-facing direction (the
--- avatar's facing): "Back" when its backward share is at least DiveBackwardThreshold (S, S+A, S+D), else "Right" /
--- "Left" by its sideways sign. Used by the client (animation) and the server alike.
-function ShotInput.diveKind(dir: Vector3, rootCFrame: CFrame): string
-	local flat = Vector3.new(dir.X, 0, dir.Z)
-	if flat.Magnitude < 1e-3 then
-		return "Right"
-	end
-	flat = flat.Unit
-	local look = Vector3.new(rootCFrame.LookVector.X, 0, rootCFrame.LookVector.Z)
-	local right = Vector3.new(rootCFrame.RightVector.X, 0, rootCFrame.RightVector.Z)
-	if look.Magnitude > 1e-3 and -flat:Dot(look.Unit) >= Config.Movement.DiveBackwardThreshold then
-		return "Back"
-	end
-	return if right.Magnitude > 1e-3 and flat:Dot(right.Unit) < 0 then "Left" else "Right"
-end
-
--- The reach for a swing right now: the stroke's anchor and radius, extended while a dive's contact window is open
--- (`diveDir` = that dive's horizontal direction, nil when not in a dive's contact window).
-function ShotInput.reachFor(rootCFrame: CFrame, settings: any, stroke: string?, diveDir: Vector3?): (Vector3?, number)
-	local anchor = ShotInput.anchor(rootCFrame, settings, stroke)
-	local reach = settings.PaddleReach
-	if anchor and diveDir then
-		local M = Config.Movement
-		local flat = Vector3.new(diveDir.X, 0, diveDir.Z)
-		if flat.Magnitude > 1e-3 then
-			anchor += flat.Unit * M.DiveAnchorAhead
-		end
-		reach += M.DiveReachBonus
-	end
-	return anchor, reach
+-- The reach for a swing right now: the stroke's anchor and its NORMAL radius (the outer emergency radius is
+-- ShotInput.emergencyReach). (The F dive's extended reach was retired on 2026-11-17; the 4th argument is ignored.)
+function ShotInput.reachFor(rootCFrame: CFrame, settings: any, stroke: string?, _unused: any?): (Vector3?, number)
+	return ShotInput.anchor(rootCFrame, settings, stroke), settings.PaddleReach
 end
 
 -- Timing value used by the shot error model: release offset from the ideal moment, in half clean-windows.
@@ -111,16 +103,88 @@ function ShotInput.inReach(p: Vector3, anchor: Vector3, reach: number): boolean
 	return Vector2.new(p.X - anchor.X, p.Z - anchor.Z).Magnitude <= reach
 end
 
--- Clamp an accumulated drag (pixels) to just past full spin, so dragging further does nothing and dragging back
--- starts reducing the spin right away (instead of first "unwinding" a huge overshoot).
-function ShotInput.clampDrag(drag: Vector2): Vector2
-	local S = Config.ShotControl
-	local full = S.SpinDeadzonePixels + S.SpinDragPixels / math.max(S.SpinSensitivity, 1e-3)
-	local limit = full + S.DragOvershootPixels
-	if drag.Magnitude > limit then
-		return drag.Unit * limit
+-- ===== CLICK-AND-FLICK (2026-11-17) =====
+
+-- PREPARATION from the cursor's screen position (fractions of the viewport: fx 0 = left edge .. 1 = right, fy 0 = top ..
+-- 1 = bottom). Returns:
+--   stroke   "Forehand" | "Backhand" (left of the dead zone = backhand; inside it the current stroke is kept)
+--   aim      -1 .. 1 base placement across the opponent's half (cursor left = their left as you see it)
+--   profile  0 (low drive) .. 1 (high arc): higher on the screen = a higher arc
+--   u, v     the prepared paddle position for the arm: u -1..1 across the screen, v 0 (low) .. 1 (high)
+function ShotInput.prep(fx: number, fy: number, currentStroke: string?): (string, number, number, number, number)
+	local S, P = Config.ShotControl, Config.Prep
+	if fx ~= fx or fy ~= fy then
+		fx, fy = 0.5, 0.5
 	end
-	return drag
+	fx, fy = math.clamp(fx, 0, 1), math.clamp(fy, 0, 1)
+	local f = fx - 0.5
+	local dead = S.StrokeDeadZone or 0
+	local stroke = currentStroke or "Forehand"
+	if f < -dead then
+		stroke = "Backhand"
+	elseif f > dead then
+		stroke = "Forehand"
+	end
+	local aim = math.clamp(f / math.max(P.AimHalfSpan, 1e-3), -P.AimMaxX, P.AimMaxX)
+	local profile = math.clamp((P.ProfileBottom - fy) / math.max(P.ProfileBottom - P.ProfileTop, 1e-3), 0, 1)
+	local u = math.clamp(f / 0.5, -1, 1)
+	return stroke, aim, profile, u, profile
+end
+
+-- A recognised flick (average speed in ref px/s, unit screen direction, y DOWN) -> power 0..1, topspin, sidespin (rad/s).
+-- power: MinPower at OnsetSpeed rising to 1 at FullPowerSpeed. Spin strength grows with the power (SpinAtMinPower ..
+-- SpinAtFullPower) and points along the flick: up = topspin, down = backspin, right = curve to the right (negative
+-- sidespin: ShotSolver's positive sidespin curves the ball to ITS left), left = curve left; diagonals split it.
+function ShotInput.flickShot(speed: number, dirX: number, dirY: number): (number, number, number)
+	local F = Config.Flick
+	if speed ~= speed or dirX ~= dirX or dirY ~= dirY then
+		return 0, 0, 0
+	end
+	local n = math.clamp((speed - F.OnsetSpeed) / math.max(F.FullPowerSpeed - F.OnsetSpeed, 1e-3), 0, 1)
+	local power = F.MinPower + (1 - F.MinPower) * n ^ F.PowerExponent
+	local mag = math.sqrt(dirX * dirX + dirY * dirY)
+	if mag < 1e-6 then
+		return power, 0, 0
+	end
+	local intensity = math.min(F.SpinAtMinPower + (F.SpinAtFullPower - F.SpinAtMinPower) * n, Config.ShotControl.MaxSpin)
+	return power, intensity * (-dirY / mag), intensity * (-dirX / mag)
+end
+
+-- SERVER validation of the flick measurements a client reports ({ d = distance ref px, u = duration s, x, y = direction }).
+-- Recomputes the speed itself; rejects values no recognised flick can produce (instead of clamping them into a shot).
+-- Returns ok, speed, dirX, dirY, reason.
+function ShotInput.validateFlick(raw: any): (boolean, number, number, number, string)
+	local F = Config.Flick
+	if typeof(raw) ~= "table" then
+		return false, 0, 0, 0, "no flick"
+	end
+	local d, u, x, y = raw.d, raw.u, raw.x, raw.y
+	for _, v in { d, u, x, y } do
+		if typeof(v) ~= "number" or v ~= v or math.abs(v) > 1e6 then
+			return false, 0, 0, 0, "bad flick values"
+		end
+	end
+	local mag = math.sqrt(x * x + y * y)
+	if mag < 0.9 or mag > 1.1 then
+		return false, 0, 0, 0, "bad flick direction"
+	end
+	if u < F.MinElapsed * 0.99 or u > F.OnsetWindow + F.SegmentMax + 0.1 then
+		return false, 0, 0, 0, "flick duration out of range"
+	end
+	if d < F.OnsetDistance * 0.9 then
+		return false, 0, 0, 0, "flick too short"
+	end
+	local speed = d / u
+	if speed < F.OnsetSpeed * 0.9 or speed > F.MaxSpeed then
+		return false, 0, 0, 0, "flick speed out of range"
+	end
+	return true, speed, x / mag, y / mag, "ok"
+end
+
+-- The outer (emergency save) reach radius around the stroke's anchor.
+function ShotInput.emergencyReach(settings: any): number
+	local E = Config.Emergency
+	return settings.PaddleReach + (if E.Enabled then E.ReachExtra else 0)
 end
 
 -- One mouse-movement event -> the relative movement (pixels, y down) to add to the drag, and where it came from.
@@ -144,46 +208,28 @@ function ShotInput.movementOf(delta: Vector2, pos: Vector2, lastPos: Vector2?): 
 	return Vector2.zero, "none"
 end
 
--- Drag in screen pixels (dx right +, dy DOWN +, as Roblox reports mouse positions) -> topspin, sidespin (rad/s).
---   up = topspin, down = backspin, right = right sidespin (ball curves to the player's right), left = left sidespin.
--- Magnitude: past a small dead zone, n = distance * SpinSensitivity / SpinDragPixels (0..1), intensity =
--- n ^ SpinCurveExponent * MaxSpin, so the total spin never exceeds MaxSpin; a diagonal splits it between the axes.
--- Sidespin sign follows ShotSolver: positive curves the ball to ITS left, so "right" sidespin is negative.
-function ShotInput.dragToSpin(dx: number, dy: number): (number, number, number)
-	local S = Config.ShotControl
-	if dx ~= dx or dy ~= dy then -- NaN
-		return 0, 0, 0
-	end
-	local mag = math.sqrt(dx * dx + dy * dy)
-	if mag <= S.SpinDeadzonePixels then
-		return 0, 0, 0
-	end
-	local n = math.clamp((mag - S.SpinDeadzonePixels) * S.SpinSensitivity / S.SpinDragPixels, 0, 1)
-	local intensity = (n ^ S.SpinCurveExponent) * S.MaxSpin
-	local topspin = intensity * (-dy / mag)
-	local sidespin = intensity * (-dx / mag)
-	return topspin, sidespin, intensity
-end
-
-local function finish(enter: number?, exit: number?, ideal: number, pos: Vector3): Window?
-	if not enter or not exit then
-		return nil
-	end
-	return { enter = enter, exit = exit, ideal = ideal, idealPosition = pos }
-end
-
 -- Simulate `state` forward (exactly like the live ball) and find the paddle contact window for a paddle at `anchor`.
 -- `bounced`: the ball has ALREADY bounced on the player's half (otherwise that bounce must happen in the prediction).
--- Hittable = bounced on the Player half, in reach, and falling or already past the player's end line (same rule as
--- the bot). Returns nil when the ball never becomes hittable within `horizon` seconds.
+-- Hittable = bounced exactly once on the Player half and in reach (horizontal radius + height band). RISING OR FALLING
+-- (2026-11-17 Stage 1): the old extra condition "falling, or already past the player's end line" is now
+-- Config.ShotControl.RequireFallingBall (false). `requireFalling` overrides it per call: true = the old gate (kept for the
+-- emergency-save ring, whose rules are unchanged, and for telemetry comparisons).
+-- A high ball can pass through the reach on the way UP, leave it above the height band and come back DOWN through it:
+-- each pass is a separate segment (the window is never open while the ball is out of reach) and the window is the pass
+-- where the ball comes closest to the anchor (the later pass when they are within SegmentPreferLater studs).
+-- Returns nil when the ball never becomes hittable within `horizon` seconds.
+local SEGMENT_PREFER_LATER = 0.5
+
 function ShotInput.contactWindow(
 	state: BallPhysics.State,
 	anchor: Vector3,
 	reach: number,
 	bounced: boolean,
-	horizon: number?
+	horizon: number?,
+	requireFalling: boolean? -- nil = Config.ShotControl.RequireFallingBall; true = only falling (or past the end line)
 ): Window?
 	local cfg, world = TableWorld.physics, TableWorld.world
+	local falling = if requireFalling ~= nil then requireFalling else Config.ShotControl.RequireFallingBall == true
 	local s = BallPhysics.copyState(state)
 	s.resting = false
 	local events: { BallPhysics.Event } = {}
@@ -191,45 +237,77 @@ function ShotInput.contactWindow(
 	-- 3 s: the server predicts from the moment of the opponent's hit, and a high lob (bot pop-up) takes well over 1.5 s
 	-- to bounce and fall back into reach (1.5 s made every lob "ball never in reach" on the server).
 	local n = math.floor((horizon or 3) / cfg.fixedStep)
-	local enter, exit, ideal, best, bestPos = nil :: number?, nil :: number?, 0, math.huge, Vector3.zero
+	local chosen: Window? = nil
+	local chosenBest = math.huge
+	local cur: any = nil -- the pass in progress: { enter, exit, ideal, best, pos }
+	local function close()
+		if cur then
+			-- a later pass becomes the main window unless the earlier came clearly (> SEGMENT_PREFER_LATER) closer; the
+			-- other pass stays hittable as `earlier` (only the two most relevant passes are kept)
+			local w: Window = { enter = cur.enter, exit = cur.exit, ideal = cur.ideal, idealPosition = cur.pos }
+			if not chosen then
+				chosen, chosenBest = w, cur.best
+			elseif cur.best <= chosenBest + SEGMENT_PREFER_LATER then
+				local prev = chosen :: Window
+				prev.earlier = nil
+				w.earlier = prev
+				chosen, chosenBest = w, cur.best
+			end -- (else the earlier pass stays the main window and this later one is ignored: a contact after the main
+			--      window's exit is "too late", the ball already went past the paddle once)
+			cur = nil
+		end
+	end
 	for i = 1, n do
 		local before = #events
 		BallPhysics.tick(s, cfg, world, events)
+		local stop = false
 		for k = before + 1, #events do
 			local e = events[k]
 			if e.kind == "table" then
 				if e.surface == "Player" then
 					if bounced then
-						return finish(enter, exit, ideal, bestPos) -- second bounce: nothing later is legal
+						stop = true -- second bounce: nothing later is legal
 					end
 					bounced = true
 				elseif bounced then
-					return finish(enter, exit, ideal, bestPos)
+					stop = true
 				end -- (a serve's first bounce, on the server's own half, is expected)
 			elseif e.kind == "floor" then
-				return finish(enter, exit, ideal, bestPos)
+				stop = true
 			end
+		end
+		if stop then
+			break
 		end
 		local t = i * cfg.fixedStep
 		local p = s.position
-		local hittable = bounced and ShotInput.inReach(p, anchor, reach) and (s.velocity.Y <= 0 or p.Z > endZ)
+		local hittable = bounced and ShotInput.inReach(p, anchor, reach) and (not falling or s.velocity.Y <= 0 or p.Z > endZ)
 		if hittable then
-			enter = enter or t
-			exit = t
 			local d = Vector2.new(p.X - anchor.X, p.Z - anchor.Z).Magnitude
-			if d < best then
-				best, ideal, bestPos = d, t, p
+			if not cur then
+				cur = { enter = t, exit = t, ideal = t, best = d, pos = p }
 			end
-		elseif enter then
-			break -- left the reach zone
+			cur.exit = t
+			if d < cur.best then
+				cur.best, cur.ideal, cur.pos = d, t, p
+			end
+		elseif cur then
+			close() -- left the reach zone (it may come back: keep looking)
 		end
 		if s.resting then
 			break
 		end
+		-- moving away beyond any chance of coming back into reach: stop early (prediction runs every frame)
+		if bounced and not cur then
+			local dx, dz = p.X - anchor.X, p.Z - anchor.Z
+			if dx * dx + dz * dz > (reach + 12) ^ 2 and (dx * s.velocity.X + dz * s.velocity.Z) > 0 then
+				break
+			end
+		end
 	end
-	return finish(enter, exit, ideal, bestPos)
+	close()
+	return chosen
 end
-
 -- The last moment a release still makes contact (clean or weak).
 function ShotInput.windowEnd(w: Window): number
 	local S = Config.ShotControl
@@ -244,6 +322,15 @@ function ShotInput.classify(t: number, w: Window?): (string, string, number)
 		return "miss", "ball never in reach", 0
 	end
 	local S = Config.ShotControl
+	if t < w.enter and w.earlier and t >= w.earlier.enter then
+		-- before the main pass: judged against the earlier pass; a miss there (or between the passes, while the ball is
+		-- above the reach) is reported as too early for the main pass
+		local q, why, off = ShotInput.classify(t, w.earlier)
+		if q ~= "miss" then
+			return q, why, off
+		end
+		return "miss", "too early (ball not in reach yet)", t - w.ideal
+	end
 	local offset = t - w.ideal
 	if t < w.enter then
 		return "miss", "too early (ball not in reach yet)", offset

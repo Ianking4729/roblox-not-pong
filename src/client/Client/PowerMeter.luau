@@ -1,7 +1,7 @@
--- PowerMeter (client, cosmetic): the bottom-right "Power" and "Curve" bars.
---   Power fills from HOLD TIME only (the value comes from ShotController.power(), which ignores the mouse).
---   Curve shows the strength of the selected spin (0..MaxSpin).
--- Segmented bars, shown while charging and briefly after the release. All tunables: Config.Feedback.PowerMeter.
+-- PowerMeter (client, cosmetic): the bottom-right "Power" and "Curve" bars (click-and-flick, 2026-11-17).
+--   Power = the power the flick's SPEED gave (ShotController.power after a flick; holding never fills it).
+--   Curve = the strength of the flick's spin (0..MaxSpin).
+-- Segmented bars, shown briefly after each flick. All tunables: Config.Feedback.PowerMeter.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 

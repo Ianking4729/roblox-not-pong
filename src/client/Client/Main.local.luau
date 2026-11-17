@@ -46,11 +46,10 @@ task.spawn(ServeInput.start)
 task.spawn(function()
 	local controller = ShotController.start(player)
 	if controller then
-		-- Forehand / backhand: the shot controller decides (screen side, locked while charging); the stance shows it.
+		-- Forehand / backhand: the shot controller decides (screen side, locked from the click); the stance shows it, and
+		-- the paddle arm follows the controller's preparation, commitment and swings (StanceController.attachShot).
 		StanceController.setStroke(controller.stroke)
-		MovementInput.setStrokeGetter(function()
-			return controller.stroke
-		end)
+		StanceController.attachShot(controller)
 		ServeInput.attachShotController(controller) -- the serve strike + the aim lock follow the shot input
 		controller.on(function(event: string, data: any)
 			if event == "stroke" then
@@ -58,6 +57,7 @@ task.spawn(function()
 			end
 		end)
 		ShotFeedback.start(player, controller, { impact = ImpactFx.start() })
+		require(Client:WaitForChild("Telemetry")).start(player, controller) -- (diagnosis only: Config.Telemetry)
 	end
 end)
 task.spawn(function()

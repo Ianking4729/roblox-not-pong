@@ -15,6 +15,9 @@ local RunService = game:GetService("RunService")
 
 local Config = require(script.Parent:WaitForChild("Config"))
 local NotPongAnims = require(script.Parent:WaitForChild("NotPongAnims"))
+local PaddleArm = require(script.Parent:WaitForChild("PaddleArm"))
+local TableWorld = require(script.Parent:WaitForChild("TableWorld"))
+local ShotLaunch = require(script.Parent:WaitForChild("ShotLaunch"))
 
 local StancePose = {}
 
@@ -232,93 +235,14 @@ function StancePose.playSwing(character: Model, strength: number, stroke: string
 	return track
 end
 
--- ===== Dive + get-up (the /animate clips NP_DiveRight / NP_DiveLeft / NP_DiveBack, Shared/NotPongAnimData) =====
--- One clip per direction: push-off -> airborne reach -> floor landing (0.35 s, the server's lunge) -> the 1.3 s get-up
--- (brace, kneel, rise) -> ready. The backward dive lands on the hips / back, sits up, kneels and rises. Action4, above the stance, swing and walk, every joint keyed, so nothing standing
--- shows through while the body is on the floor. The HumanoidRootPart is moved by the server (never by the clip).
--- side = +1 for a dive to the character's right, -1 to its left. The paddle stays in the right hand on both sides.
--- Returns a handle: :recover() when the server enters the recovery (re-syncs the clip to the get-up), :finish() when
--- the dive is over (lets the clip end, or blends it out if it was cut short), :stop(). Visual only.
-export type DiveHandle = { track: AnimationTrack, recover: (DiveHandle) -> (), finish: (DiveHandle) -> (), stop: (DiveHandle) -> () }
-local diveHandles: { [Model]: DiveHandle } = {}
+-- (The F dive's clips and player, StancePose.dive / playDive, were retired on 2026-11-17 with the F dive itself; the
+-- EMERGENCY SAVE's body clip is played by the stance controller: controller:playSave, see StancePose.start.)
 local timeScale = 1
 
--- Client slow motion (ShotController) scales the tracks this module drives every frame (the shuffle).
+-- Client slow motion scales the tracks this module drives every frame (the shuffle). (Rally slow motion is off.)
 function StancePose.setTimeScale(scale: number)
 	timeScale = math.clamp(scale, 0, 1)
 end
-
-function StancePose.dive(character: Model, side: number | string): DiveHandle?
-	local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	if not root then
-		return nil
-	end
-	-- side: "Back" | "Left" | "Right" (ShotInput.diveKind), or a number (+1 right, -1 left) for old callers
-	local name = if side == "Back" then "NP_DiveBack"
-		elseif side == "Left" or (typeof(side) == "number" and side < 0) then "NP_DiveLeft"
-		else "NP_DiveRight"
-	local previous = diveHandles[character]
-	if previous then
-		previous:stop()
-	end
-	local track = NotPongAnims.load(character, name, nil) -- (own HipHeight: no fit needed)
-	if not track then
-		return nil
-	end
-	local D = Config.DivePose
-	local length = NotPongAnims.length(name)
-	local recoverAt = NotPongAnims.markerTime(name, "Recover") or 0.35
-	track:Play(D.BlendIn)
-	local handle = { track = track } :: any
-	local conn: RBXScriptConnection? = nil
-	function handle.stop(self: DiveHandle, fade: number?)
-		if conn then
-			conn:Disconnect()
-			conn = nil
-		end
-		if track.IsPlaying then
-			track:Stop(fade or D.BlendOut)
-		end
-		if diveHandles[character] == self then
-			diveHandles[character] = nil
-		end
-	end
-	function handle.recover(self: DiveHandle)
-		-- the lunge is over on the server: the get-up starts now (never jumps backward)
-		if track.IsPlaying and track.TimePosition < recoverAt then
-			track.TimePosition = recoverAt
-		end
-	end
-	function handle.finish(self: DiveHandle)
-		-- the server's dive is over: if the clip still has more than its blend-out left, it was cut short (respawn,
-		-- cancel): blend back to the stance now
-		if track.IsPlaying and length - track.TimePosition > D.BlendOut + 0.05 then
-			self:stop()
-		end
-	end
-	-- blend out into the live ready stance over the clip's last BlendOut seconds (no pop at the end)
-	conn = RunService.Heartbeat:Connect(function()
-		if character.Parent == nil then
-			handle:stop(0)
-		elseif track.IsPlaying then
-			track:AdjustSpeed(timeScale)
-			if track.TimePosition >= length - D.BlendOut then
-				handle:stop()
-			end
-		end
-	end)
-	track.Stopped:Once(function()
-		if diveHandles[character] == handle then
-			diveHandles[character] = nil
-		end
-		task.defer(function()
-			track:Destroy()
-		end)
-	end)
-	diveHandles[character] = handle
-	return handle :: DiveHandle
-end
-
 -- ===== Serve (the /animate clips NP_ServeToss / NP_ServeStrike; upper body only, Action3) =====
 -- hold(): the ball rests in the free (left) hand (the toss clip's first frame, held). toss(): plays the toss at
 -- Config.Serve.TossAnimSpeed: dip, lift, release at the clip's Release marker (Config.Serve.TossReleaseDelay = marker /
@@ -412,12 +336,6 @@ function StancePose.serve(character: Model): ServeHandle?
 		end
 	end
 	return handle :: ServeHandle
-end
-
--- (kept for old callers) play the dive for `side`.
-function StancePose.playDive(character: Model, side: number, _totalTime: number?): AnimationTrack?
-	local h = StancePose.dive(character, side)
-	return h and h.track
 end
 
 -- Lowest point of the feet below the root, in studs (root.Y - lowest foot corner). Uses the parts' real corners.
@@ -768,6 +686,226 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 		end
 	end)
 
+	-- ===== PADDLE ARM LAYER (click-and-flick, 2026-11-17; Config.ArmLayer, Shared/PaddleArm) =====
+	-- Only for the LOCAL player's character (StanceController attaches the shot controller; the bot never gets one, so its
+	-- weight stays 0). Ownership: this layer writes the RIGHT shoulder / elbow / wrist after the Animator and after the
+	-- waist / neck layer below, blended by its own weight; legs, hips, root and facing are never touched. It fades out
+	-- whenever the shot controller says the arm belongs to something else (your serve's hold / toss / strike clips).
+	local AL = Config.ArmLayer
+	local shotRef: any = nil
+	local armRig: PaddleArm.Rig? = nil
+	local armHandle: Instance? = nil
+	local armWeight = 0
+	local armPose: PaddleArm.Pose? = nil -- the smoothed prepared pose
+	local shownPose: PaddleArm.Pose? = nil -- the pose written last frame (a swing starts from it)
+	local swing: any = nil -- { t0, tc (contact), tf (follow-through), tr (back), from, contact, follow }
+	local function rigNow(): PaddleArm.Rig?
+		local paddle = character:FindFirstChild("Paddle")
+		local handle = paddle and paddle:FindFirstChild("Handle")
+		if armRig and handle == armHandle then
+			return armRig
+		end
+		armHandle = handle
+		armRig = PaddleArm.rig(character)
+		return armRig
+	end
+	local function smooth(k: number): number
+		k = math.clamp(k, 0, 1)
+		return k * k * (3 - 2 * k)
+	end
+	local windup: any = nil -- { t0, stroke } while a candidate flick's wind-up is shown
+	local windupW = 0
+	local function startSwing(data: any)
+		local rig = rigNow()
+		local from = shownPose or armPose
+		if not rig or not from or character.Parent == nil then
+			return
+		end
+		local stroke = if data.stroke == "Backhand" then "Backhand" else "Forehand"
+		local now = os.clock()
+		local serverNow = workspace:GetServerTimeNow()
+		local toContact = math.max((data.contactT or serverNow) - serverNow, AL.MinStrikeTime)
+		local torsoCF = rig.torso.CFrame
+		local contactPose, err
+		local t0 = os.clock()
+		if typeof(data.contact) == "Vector3" then
+			-- outgoing direction: toward the base aim on the opponent's half (an emergency save: its middle)
+			local x = if data.kind == "emergency" then 0 else ShotLaunch.aimLateral(data.aim or 0, "Player")
+			local goal = TableWorld.pointOnHalf("Bot", 0.6, x)
+			local out = Vector3.new(goal.X - data.contact.X, 0, goal.Z - data.contact.Z)
+			out = if out.Magnitude > 1e-3 then out.Unit else Vector3.new(0, 0, -1)
+			contactPose, err = PaddleArm.solveContact(rig, torsoCF, stroke, data.contact - out * AL.FaceOffset, out, from, TableWorld.world.tableBox)
+		else
+			-- no ball to meet: a stroke forward from the prepared blade
+			local blade = PaddleArm.fk(rig, torsoCF, from)
+			local look = root.CFrame.LookVector
+			local fwd = Vector3.new(look.X, 0, look.Z)
+			fwd = if fwd.Magnitude > 1e-3 then fwd.Unit else Vector3.new(0, 0, -1)
+			contactPose, err = PaddleArm.solveContact(rig, torsoCF, stroke, blade.Position + fwd * AL.MissReach, fwd, from, TableWorld.world.tableBox)
+		end
+		-- (diagnostics, read by the shot controller's debug bridge) how close the solved blade gets to its target
+		local solved = PaddleArm.fk(rig, torsoCF, contactPose)
+		local shot = shotRef
+		if shot then
+			shot.lastArmSolve = {
+				error = err,
+				solveMs = (os.clock() - t0) * 1000,
+				toContact = toContact,
+				bladeTarget = typeof(data.contact) == "Vector3" and data.contact or nil,
+				faceAlign = nil,
+				clearance = PaddleArm.clearance(rig, torsoCF, contactPose, TableWorld.world.tableBox),
+				bladeAt = solved.Position,
+			}
+		end
+		swing = {
+			t0 = now,
+			tc = now + toContact,
+			tf = now + toContact + AL.FollowTime,
+			tr = now + toContact + AL.FollowTime + AL.ReturnTime,
+			from = from,
+			contact = contactPose,
+			follow = PaddleArm.offset(contactPose, AL.Follow[stroke]),
+		}
+	end
+	-- EMERGENCY SAVE body clip (Config.Emergency; /animate clips NP_SaveRight / NP_SaveLeft, Action3): a reaching lunge
+	-- toward the ball, landing at its Land marker (0.25 s = LandDelay), then the 0.5 s stand-up. It keys the legs, hips,
+	-- chest, head and the free arm, never the paddle arm (the arm layer reaches for the ball over it) and never the root.
+	-- During the stand-up it hands the legs back to the footwork as soon as you move (its weight drops with the moving
+	-- weight), so movement keeps responding; it fades out at its end.
+	local saveTrack: AnimationTrack? = nil
+	local saveLand = 0.25
+	function controller.playSave(self: Controller, side: string)
+		if saveTrack then
+			saveTrack:Stop(0.05)
+		end
+		local name = if side == "Left" then "NP_SaveLeft" else "NP_SaveRight"
+		local track = NotPongAnims.load(character, name, nil)
+		if not track then
+			return
+		end
+		saveLand = NotPongAnims.markerTime(name, "Land") or 0.25
+		track.Looped = false
+		track:Play(0.05)
+		saveTrack = track
+		track.Stopped:Once(function()
+			if saveTrack == track then
+				saveTrack = nil
+			end
+			task.defer(function()
+				track:Destroy()
+			end)
+		end)
+	end
+	function controller.setShot(self: Controller, shot: any)
+		if shotRef == shot then
+			return
+		end
+		shotRef = shot
+		shot.on(function(event: string, data: any)
+			if shotRef ~= shot then
+				return
+			end
+			-- the reversible wind-up at a credible flick onset (Config.ArmLayer.Windup): eased in on "onset", eased back out
+			-- on "onsetEnd" (an ignored candidate) or after Windup.Max; a swing starts from the wound-up pose
+			if event == "onset" then
+				windup = { t0 = os.clock(), stroke = data and data.stroke or shot.stroke }
+			elseif event == "onsetEnd" or event == "reset" or event == "cancel" then
+				windup = nil
+			end
+			if event == "swing" and not data.serve and character.Parent ~= nil then
+				startSwing(data)
+				windup = nil
+				if data.kind == "emergency" and data.lunge and controller.active then
+					-- lunge toward the ball's side of the body (the predicted contact)
+					local side = "Right"
+					if typeof(data.contact) == "Vector3" then
+						side = if (data.contact - root.Position):Dot(root.CFrame.RightVector) >= 0 then "Right" else "Left"
+					end
+					controller:playSave(side)
+				end
+			end
+		end)
+	end
+	-- (tests / debug) the arm layer's state
+	function controller.armDebug(self: Controller): any
+		return { weight = armWeight, swinging = swing ~= nil, rig = armRig ~= nil, windup = windupW, windupActive = windup ~= nil }
+	end
+	local rShoulder, rElbow, rWrist, rWaist = nil :: any, nil :: any, nil :: any, nil :: any
+	local function armJoints(): boolean
+		if rShoulder and rShoulder.Parent and rElbow and rElbow.Parent and rWrist and rWrist.Parent then
+			return true
+		end
+		local ua, la, hand = character:FindFirstChild("RightUpperArm"), character:FindFirstChild("RightLowerArm"), character:FindFirstChild("RightHand")
+		local ut = character:FindFirstChild("UpperTorso")
+		rShoulder = ua and ua:FindFirstChild("RightShoulder")
+		rElbow = la and la:FindFirstChild("RightElbow")
+		rWrist = hand and hand:FindFirstChild("RightWrist")
+		rWaist = ut and ut:FindFirstChild("Waist")
+		return rShoulder ~= nil and rElbow ~= nil and rWrist ~= nil
+	end
+	local function armLayer(dt: number)
+		-- the save clip's stand-up yields the legs to the footwork while you move
+		local st = saveTrack
+		if st and st.IsPlaying then
+			local t = st.TimePosition
+			if t > saveLand then
+				local w = math.max(1 - 0.85 * controller.moveWeight, 0.15)
+				local left = st.Length - t
+				if left < 0.12 then
+					w *= math.max(left / 0.12, 0)
+				end
+				st:AdjustWeight(math.max(w, 0.001), 0.05)
+			end
+		end
+		local shot = shotRef
+		local enabled = AL.Enabled and shot ~= nil and shot.armEnabled ~= nil and shot.armEnabled()
+		armWeight += ((if enabled then 1 else 0) - armWeight) * (1 - math.exp(-AL.BlendRate * dt))
+		if armWeight < 0.002 or not shot or not armJoints() then
+			if not enabled then
+				swing = nil
+			end
+			return
+		end
+		local stroke = if shot.stroke == "Backhand" then "Backhand" else "Forehand"
+		local across = if stroke == "Forehand" then math.clamp(shot.prepU or 0, 0, 1) else math.clamp(-(shot.prepU or 0), 0, 1)
+		local target = PaddleArm.prepPose(stroke, across, shot.prepV or 0.5)
+		armPose = if armPose then PaddleArm.lerp(armPose :: PaddleArm.Pose, target, 1 - math.exp(-AL.PrepSmoothing * dt)) else target
+		local pose = armPose :: PaddleArm.Pose
+		-- wind-up (see setShot): weight eases toward 1 while a candidate flick is being measured, back to 0 otherwise
+		local WU = AL.Windup
+		if windup and os.clock() - windup.t0 > (WU and WU.Max or 0) then
+			windup = nil
+		end
+		local wantW = if windup and WU and WU.Enabled and not swing then 1 else 0
+		windupW += (wantW - windupW) * math.min(dt / math.max(WU and WU.Time or 0.05, 1e-3) * 2.5, 1)
+		if windupW > 0.002 and WU and not swing then
+			local key = if stroke == "Backhand" then "Backhand" else "Forehand"
+			pose = PaddleArm.lerp(pose, PaddleArm.offset(pose, WU[key]), windupW)
+		end
+		if swing then
+			local now = os.clock()
+			local s = swing
+			if now < s.tc then
+				pose = PaddleArm.lerp(s.from, s.contact, smooth((now - s.t0) / math.max(s.tc - s.t0, 1e-3)))
+			elseif now < s.tf then
+				pose = PaddleArm.lerp(s.contact, s.follow, smooth((now - s.tc) / math.max(s.tf - s.tc, 1e-3)))
+			elseif now < s.tr then
+				pose = PaddleArm.lerp(s.follow, pose, smooth((now - s.tf) / math.max(s.tr - s.tf, 1e-3)))
+			else
+				swing = nil
+			end
+		end
+		shownPose = pose
+		local w = armWeight
+		rShoulder.Transform = rShoulder.Transform:Lerp(pose.s, w)
+		rElbow.Transform = rElbow.Transform:Lerp(pose.e, w)
+		rWrist.Transform = rWrist.Transform:Lerp(pose.w, w)
+		if rWaist and pose.t ~= CFrame.identity then
+			-- upper-body support for a far contact (on top of the stance / counter-rotation; the hips and legs are untouched)
+			rWaist.Transform = rWaist.Transform * CFrame.identity:Lerp(pose.t, w)
+		end
+	end
+
 	-- ADDITIVE UPPER-BODY LAYER: after the Animator has posed the body, before physics and rendering.
 	local lowerTorso = character:FindFirstChild("LowerTorso")
 	local upperTorso = character:FindFirstChild("UpperTorso")
@@ -811,6 +949,7 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 		if shoulder then
 			shoulder.Transform = shoulder.Transform * CFrame.Angles(A.FreeArmSwing * hipYaw, 0, 0)
 		end
+		armLayer(dt) -- the paddle arm last (click-and-flick preparation / stroke)
 	end)
 
 	function controller.stop(self: Controller)

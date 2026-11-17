@@ -7,20 +7,22 @@
 --     pass 3: no serve slow motion), and the player strikes it with a normal swing judged here: a contact inside the
 --     toss's contact phase (ServeRules.phase, at release + HitDelay) is a LEGAL serve solved by ShotLaunch.serve; early,
 --     late, out of reach or never struck are real faults. The BOT serves automatically,
---   * per physics tick asks the bot's Striker whether it can legally hit, and resolves the player's AUTOMATIC DIVE RETURN
---     (2026-11-16 pass 3): the first legal, in-reach tick of a dive's contact window rolls the outcome once,
---     (DiveReturnChance: a legal defensive return, else a physical mishit),
+--   * per physics tick asks the bot's Striker whether it can legally hit, and applies the player's judged contact on the
+--     tick that reaches its time,
 --   * feeds contacts to RallyReferee and applies outcomes to the existing MatchState (score, serve rotation).
--- Clients only send requests: "serve now" (checked: seat, state, turn, distance, delay, rate limit), "I started
--- charging" (press time) and "I released a swing" (drag, release time). A swing is judged HERE from the ball's own
--- simulated history: press and release times are each clamped to MaxLatencyCompensation of when they arrived, so the
--- CHARGE (power) is measured by the server; the contact window comes from the ball's distance to the paddle anchor
--- (ShotInput); spin is clamped; one swing per incoming ball; and the launch is computed with the shared ShotLaunch
--- model and real physics. The client never claims a hit and never sends a power value or a target.
+-- Clients only send requests: "serve now" (checked: seat, state, turn, distance, delay, rate limit) and "I flicked"
+-- (CLICK-AND-FLICK, 2026-11-17): the flick's start time, its raw measurements (distance, duration, direction), the stroke,
+-- base aim and drive/arc profile locked at the click, the click time and the root. A swing is judged HERE from the
+-- ball's own simulated history: the flick time is clamped to MaxLatencyCompensation + Flick.RecognitionAllowance of its
+-- arrival; the paddle meets the ball Flick.ContactDelay later; the contact must fall inside the contact window of the
+-- incoming ball against the stroke's reach from the player's real position (ShotInput.contactWindow / classify), or, for
+-- a ball that never enters that reach, inside the outer EMERGENCY ring's window (a defensive lob, Config.Emergency).
+-- Power and spin are recomputed here from the validated flick measurements (ShotInput.validateFlick / flickShot); one
+-- swing per incoming ball and per toss; the launch uses the shared ShotLaunch model and real physics. The client never
+-- claims a hit or a contact point and never sends a power, a velocity or a target.
 --
--- CHARGE SLOW MOTION (Config.ChargeFreeze; solo matches only): a press near contact slows the ball simulation,
--- player movement and bot movement/animations. Charge power remains measured in real time. Release is judged against
--- the slowed simulation timeline; no release within MaxDuration -> normal speed resumes and the swing is lost.
+-- CHARGE SLOW MOTION (Config.ChargeFreeze): OFF for rallies since click-and-flick (no trigger exists; the plumbing that
+-- slows the ball, player and bot is kept for a future decision). Serves never slow down.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -69,7 +71,8 @@ local function remotes()
 		end
 		return r :: RemoteEvent
 	end
-	return remote("BallSnapshot"), remote("ServeRequest"), remote("SwingRequest"), remote("SwingResult"), remote("ChargeStart"), remote("ServeResult")
+	-- (ChargeStart, the hold-to-charge press message, was retired with click-and-flick)
+	return remote("BallSnapshot"), remote("ServeRequest"), remote("SwingRequest"), remote("SwingResult"), remote("ServeResult")
 end
 
 local function finite(n: any): boolean
@@ -79,7 +82,7 @@ end
 -- arena: ArenaBuilder.load() result. match: MatchState. avatars: AvatarService. bot: the bot Model (or nil).
 function RallyService.start(arena, match, avatars, bot: Model?)
 	local cfg, world = TableWorld.physics, TableWorld.world
-	local snapshotRemote, serveRemote, swingRemote, swingResultRemote, chargeRemote, serveResultRemote = remotes()
+	local snapshotRemote, serveRemote, swingRemote, swingResultRemote, serveResultRemote = remotes()
 	local SC = Config.ShotControl
 	local rng = Random.new()
 	local referee = RallyReferee.new()
@@ -95,9 +98,9 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 	-- the serving posture locked at the toss (Config.Serve.Posture; Q before the toss): decides the serve stroke and the
 	-- hand's release point; nil when no player serve is in progress
 	local servePosture: string? = nil
-	-- a judged serve contact still in the (near) future: applied on the physics tick that reaches its time
-	local pendingServe: { time: number, velocity: Vector3, spin: Vector3, finish: () -> () }? = nil
-	local pressAim: { [Player]: number } = {} -- serve aim locked at the press (-1 .. 1)
+	-- a judged player contact (serve or rally) still in the (near) future: applied on the physics tick that reaches its
+	-- time (the paddle meets the ball Flick.ContactDelay / Serve.HitDelay after the flick started)
+	local pendingContact: { time: number, velocity: Vector3, spin: Vector3, finish: () -> () }? = nil
 	local serveSide = match.server
 	local readyAt = os.clock()
 	local lastHit = { Player = -math.huge, Bot = -math.huge }
@@ -109,22 +112,16 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 	local timeOffset = workspace:GetServerTimeNow() -- server time = ball.time + timeOffset
 	local history: { BallPhysics.State } = {} -- recent per-tick ball states (for latency rewind)
 	local incomingState: BallPhysics.State? = nil -- the ball right after the Bot's last hit / serve
-	local swingUsed = false -- one swing per incoming ball
+	local swingUsed = false -- one swing per incoming ball (and per toss)
 	local lastSwing: { [Player]: number } = {}
-	local pressAt: { [Player]: number } = {} -- server time the player's current charge began (validated)
-	-- The stroke ("Forehand" | "Backhand") the player locked when this charge began. A client CHOICE (like the drag), not a
-	-- claim: it is only ever one of the two values and is cleared with the press. Recorded and reported; reach does not
-	-- depend on it yet (see docs/current-state.md: stance-specific reach is an open decision).
-	local pressStroke: { [Player]: string } = {}
-	local lastPressMsg: { [Player]: number } = {}
-	local pressAck = 0 -- the client time of the last press this service processed (echoed in snapshots)
-	-- Charge slow motion
+	local lastSeq: { [Player]: number } = {} -- duplicate / replayed swing requests are refused
+	-- Charge slow motion (kept, never started: Config.ChargeFreeze is off for rallies)
 	local CF = Config.ChargeFreeze
 	local matchMode = if bot then "Solo" else "PvP"
 	local slowMotionAllowed = CF.Enabled and CF.Modes[matchMode] == true
 	arena.Folder:SetAttribute("ChargeFreeze", slowMotionAllowed) -- client predicts the slow-motion transition
 	arena.Folder:SetAttribute("MatchMode", matchMode)
-	local slowMotion: any = nil -- the active charge slow motion (see trySlowMotion)
+	local slowMotion: any = nil -- the active charge slow motion (never started since click-and-flick; see the header)
 	local slowMotionSerial = 0
 	local slowMotionUsedHits = -1 -- referee.hits of the ball last slowed (one per incoming ball)
 	local botTracks: { [AnimationTrack]: number } = {}
@@ -140,11 +137,47 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		end),
 	}
 	local botBrain = if bot then BotController.new(bot, strikers.Bot) else nil
-	local diveUsedHits = -1 -- referee.hits of the ball the player last dived for (one dive per incoming ball)
-	-- automatic dive returns: the dive waiting for its contact (one contact per dive and per incoming ball), and counters
-	-- (unreachable attempts, deliberate mishits and unexpected solver failures are logged and counted separately)
-	local diveArmed: { player: Player, hits: number, serial: number, resolved: boolean }? = nil
-	local diveStats = { dives = 0, eligible = 0, returns = 0, returnsLegal = 0, mishits = 0, unreachable = 0, solverFailures = 0 }
+	-- emergency saves (Config.Emergency): counters for tests / diagnostics
+	local saveStats = { attempts = 0, saves = 0, legal = 0, misses = 0, solverFailures = 0 }
+	-- (tuning telemetry: how rally swings resolve; offsetSum / offsetN = mean contact offset from the ideal moment in
+	-- seconds (negative = early); early / late / noReach count the misses by cause)
+	local swingStats = {
+		swings = 0, normal = 0, misses = 0, rejected = 0, clean = 0, weak = 0, earlyMiss = 0, lateMiss = 0, noReach = 0,
+		offsetSum = 0, offsetN = 0,
+		-- (telemetry) early misses refused only by the falling-ball rule (RequireFallingBall on) / accepted contacts that
+		-- rule would have refused (off); incoming balls the player never swung at (and how many of those had a contact
+		-- window from where they stood); where accepted contacts were predicted to land
+		risingBlocked = 0, risingHit = 0, noSwing = 0, noSwingReachable = 0, landOk = 0, landNet = 0, landOut = 0, landOwn = 0,
+	}
+	local TEL = Config.Telemetry
+	local function tel(line: string)
+		if TEL.Enabled and TEL.Print then
+			print("[Tel] server " .. line)
+		end
+	end
+	local function f2(n: any, d: number?): string
+		return if typeof(n) == "number" then string.format("%." .. tostring(d or 2) .. "f", n) else "-"
+	end
+	-- Where an accepted shot is predicted to land (the same physics the live ball runs). Always computed: the HUD's brief
+	-- verdict uses info.land ("CONTACT • OUT"); the counters are telemetry.
+	local function telLand(info: { [string]: any }, from: Vector3, velocity: Vector3, spin: Vector3)
+		local path = ShotLaunch.predictPath(from, velocity, spin, nil, 2, "Player")
+		info.land = path.kind
+		local c = TableWorld.center
+		info.landDepth = (path.position.Z - c.Z) * TableWorld.towardSide("Bot") -- studs past the net on the bot's half
+		info.landLateral = path.position.X - c.X
+		local key = "land" .. string.upper(string.sub(path.kind, 1, 1)) .. string.sub(path.kind, 2)
+		if swingStats[key] ~= nil then
+			swingStats[key] += 1
+		end
+	end
+	local function telSwing(info: { [string]: any }, quality: string, why: string)
+		local w = info.window
+		tel(("SWING %s %s (%s) offset %s lag %s | window rel. contact [%s, %s, %s] | rising gap %s%s | power %s flick %s px/s aim %s profile %s | land %s depth %s lateral %s"):format(
+			tostring(info.kind), quality, why, f2(info.offset, 3), f2(info.lag, 3), f2(w and w.enter, 3), f2(w and w.ideal, 3),
+			f2(w and w.exit, 3), f2(info.risingGap, 3), if info.risingBlocked then " RISING-BLOCKED" elseif info.risingHit then " RISING-HIT" else "", f2(info.power),
+			f2(info.flickSpeed, 0), f2(info.aim), f2(info.profile), tostring(info.land), f2(info.landDepth, 1), f2(info.landLateral, 1)))
+	end
 
 	-- Is the player the next to play the ball (Bot's return, or the Bot's serve)?
 	local function incomingForPlayer(): boolean
@@ -169,8 +202,7 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			i = incomingForPlayer(), -- the ball is on its way to the player (aim now)
 			b = referee.bounces.Player, -- bounces on the player's half since the last hit
 			h = referee.hits, -- hit counter: identifies each incoming ball
-			pa = pressAck, -- last press processed (a client that predicted slow motion learns the verdict from this)
-			st = tossState and phase == "toss" and { p = tossState.position, v = tossState.velocity, t = tossState.time + timeOffset } or nil, -- the toss as it left the hand (server time)
+			st =tossState and phase == "toss" and { p = tossState.position, v = tossState.velocity, t = tossState.time + timeOffset } or nil, -- the toss as it left the hand (server time)
 			f = f and { -- the active charge slow motion (rally only; never during a serve)
 				id = f.id,
 				kind = f.kind,
@@ -289,18 +321,13 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		serveSide = side
 		unlockServe()
 		serveBeganServer = -math.huge
-		tossState, pendingServe = nil, nil
+		tossState, pendingContact = nil, nil
 		servePosture = nil
-		table.clear(pressAim)
 		ball = BallPhysics.newState(if side == "Player" then (playerHandPoint("hold") or Config.Layout.ServeBall.Player) else Config.Layout.ServeBall[side])
 		ball.resting = true
 		timeOffset = workspace:GetServerTimeNow() - ball.time
 		table.clear(history)
 		incomingState, swingUsed = nil, false
-		table.clear(pressAt) -- a charge never carries over into the next point
-		table.clear(pressStroke)
-		diveUsedHits = -1
-		diveArmed = nil
 		clearSlowMotion()
 		ArenaBuilder.moveBall(arena, ball.position)
 		readyAt = os.clock() + Config.Timing.ServeReadyDelay
@@ -308,8 +335,38 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 	end
 
 	local function endPoint(outcome)
+		-- (telemetry) a ball that came to the player and was never swung at: could they have reached it from where they
+		-- ended up (forehand or backhand anchor; normal reach, the save ring, and without the falling-ball rule)?
+		if TEL.Enabled and incomingState and not swingUsed and serveSide ~= nil then
+			local player = avatars.getSeatedPlayer()
+			local root = player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if root then
+				swingStats.noSwing += 1
+				local found = "none"
+				for _, stroke in { "Forehand", "Backhand" } do
+					local a, reach = ShotInput.reachFor(root.CFrame, SC, stroke)
+					if a then
+						if ShotInput.contactWindow(incomingState, a, reach, false) then
+							found = stroke .. " normal"
+							break
+						elseif ShotInput.contactWindow(incomingState, a, ShotInput.emergencyReach(SC), false, nil, true) then
+							found = stroke .. " save ring"
+						elseif found == "none" and SC.RequireFallingBall and ShotInput.contactWindow(incomingState, a, reach, false, nil, false) then
+							found = stroke .. " only while rising"
+						end
+					end
+				end
+				if found ~= "none" then
+					swingStats.noSwingReachable += 1
+				end
+				tel(("NOSWING the ball came to you and was not swung at; reachable from where you ended: %s"):format(found))
+			end
+		end
+		if TEL.Enabled and not outcome.let then
+			tel(("POINT %s wins: %s | hits this rally %d | last hitter %s"):format(tostring(outcome.winner), tostring(outcome.reason), referee.hits or 0, tostring(referee.lastHitter)))
+		end
 		phase = "dead"
-		pendingServe = nil
+		pendingContact = nil
 		unlockServe()
 		local mySerial = serial
 		if botBrain then
@@ -458,9 +515,6 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		if not character or not hum or not root or hum.Health <= 0 or not character:GetAttribute("NotPongPlaced") then
 			return false, "no character"
 		end
-		if MovementService.getDive(player) then
-			return false, "still recovering from the dive"
-		end
 		if hum.FloorMaterial == Enum.Material.Air then
 			return false, "land first"
 		end
@@ -479,10 +533,9 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		MovementService.setServeLock(player, true)
 		serveBeganServer = workspace:GetServerTimeNow()
 		tossReleaseAt = os.clock() + Config.Serve.TossReleaseDelay
-		pendingServe = nil
+		pendingContact = nil
 		clearSlowMotion() -- (nothing slows a serve; a leftover rally slow motion never survives into one)
-		swingUsed = false
-		pressAt[player], pressStroke[player], pressAim[player] = nil, nil, nil -- a press from before the toss never counts
+		swingUsed = false -- (a click from before the toss never counts: the swing's click time is checked against the toss)
 		lastActivity = os.clock()
 		snapshot()
 		setEvent("Player serves")
@@ -526,49 +579,16 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		lastRequest[p] = nil
 	end)
 
-	-- ===== dive (Config.Movement.Dive*): MovementService owns the lunge; RallyService gates it and plays the return =====
-	-- A dive may start only during a live rally and once per incoming ball (MovementService asks through this gate, as its
-	-- last check, so a "yes" means the dive starts). Diving COMMITS (2026-11-16 pass 3): any charge is cancelled (a stale
-	-- release can never become a second shot), the incoming ball's manual swing is spent, and the dive is armed for one
-	-- automatic contact (tryDiveContact, per physics tick).
-	MovementService.setDiveGate(function(player: Player): (boolean, string?)
-		if avatars.getSeatedPlayer() ~= player then
-			return false, "not seated"
-		end
-		if phase ~= "live" then
-			return false, "no live rally"
-		end
-		if diveUsedHits == referee.hits then
-			return false, "already dived for this ball"
-		end
-		diveUsedHits = referee.hits
-		pressAt[player], pressStroke[player] = nil, nil
-		if slowMotion and slowMotion.player == player then
-			endSlowMotion("dive") -- (before the lunge's speed is computed: the dive runs at normal speed)
-			snapshot()
-		end
-		if incomingForPlayer() then
-			swingUsed = true -- the dive is this ball's one contact attempt
-		end
-		diveStats.dives += 1
-		diveArmed = { player = player, hits = referee.hits, serial = diveStats.dives, resolved = false }
-		return true
-	end)
-
-	-- The reach a MANUAL swing by `player` gets right now: the stroke's anchor and radius; nil + a reason during a dive
-	-- (its return is automatic, and the get-up allows no contact). Server positions only.
-	-- `claimed` (2026-11-16 pass 3): the root position the client reports with its press / release. The server sees a
-	-- client-owned character ~0.1 s late, so a moving player's anchor (and with it the contact window's ideal moment, the
-	-- timing error and the stretch) differed from what the player saw. The claim is used only when it lies within
-	-- MaxRootMismatch studs (horizontally) of the server's own view; otherwise the server's position is used.
+	-- The reach a swing by `player` gets right now: the stroke's anchor and its normal radius (the outer emergency radius
+	-- is ShotInput.emergencyReach). Server positions only, except: `claimed` (2026-11-16 pass 3), the root position the
+	-- client reports with its swing. The server sees a client-owned character ~0.1 s late, so a moving player's anchor (and
+	-- with it the contact window's ideal moment, the timing error and the stretch) differed from what the player saw. The
+	-- claim is used only when it lies within MaxRootMismatch studs (horizontally) of the server's own view; otherwise the
+	-- server's position is used. (The F dive and its automatic return were retired on 2026-11-17: Config.Emergency.)
 	local function reachFor(player: Player, stroke: string?, claimed: any): (Vector3?, number, string?)
 		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
 		if not root then
 			return nil, SC.PaddleReach, "no character"
-		end
-		local _, diving = MovementService.diveContact(player)
-		if diving then
-			return nil, SC.PaddleReach, "diving (the dive plays its own return)"
 		end
 		local cf = root.CFrame
 		if typeof(claimed) == "Vector3" and finite(claimed.X) and finite(claimed.Z) then
@@ -580,90 +600,9 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		local anchor, reach = ShotInput.reachFor(cf, SC, stroke, nil)
 		return anchor, reach, nil
 	end
-
-	-- AUTOMATIC DIVE RETURN: during the armed dive's contact window, the first tick at which the ball is legally playable
-	-- by the player (the referee: their turn, exactly one bounce on their half) and inside the dive-extended reach is the
-	-- contact. The outcome is rolled ONCE here (never per tick, never per request): a legal defensive return
-	-- (ShotLaunch.diveReturn) or a physical mishit. If the window closes first, the attempt was unreachable.
-	local function tryDiveContact(s): boolean
-		local d = diveArmed
-		if not d or d.resolved then
-			return false
-		end
-		local player = d.player
-		if player.Parent == nil or avatars.getSeatedPlayer() ~= player then
-			diveArmed = nil
-			return false
-		end
-		local dir, diving = MovementService.diveContact(player)
-		if not diving or not dir then
-			d.resolved = true
-			diveStats.unreachable += 1
-			log(("dive %d: unreachable (no playable ball inside the dive's reach during its contact window)"):format(d.serial))
-			setEvent("Dive: the ball was out of reach")
-			return false
-		end
-		if not referee:canHit("Player") then
-			return false -- not yet bounced on our half / not our turn: keep waiting inside the window
-		end
-		local root = rootOf(player.Character)
-		if not root then
-			return false
-		end
-		local p, v = s.position, s.velocity
-		local right = Vector3.new(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z)
-		local stroke = if right.Magnitude > 1e-3 and dir:Dot(right.Unit) < -0.2 then "Backhand" else "Forehand"
-		local anchor, reach = ShotInput.reachFor(root.CFrame, SC, stroke, dir)
-		if not anchor or not ShotInput.inReach(p, anchor, reach) then
-			return false
-		end
-		local endZ = TableWorld.endLineZ("Player")
-		if v.Y > 0 and p.Z <= endZ then
-			return false -- still rising over the table: same rule as every contact window (falling, or past the end line)
-		end
-		local tw = TableWorld.world.tableBox
-		if p.Y < Config.Layout.SurfaceY + Config.Ball.Radius and p.X > tw.minX and p.X < tw.maxX and p.Z > tw.minZ and p.Z < tw.maxZ then
-			return false -- under / inside the table: never through it
-		end
-		d.resolved = true
-		diveStats.eligible += 1
-		local M = Config.Movement
-		local roll = rng:NextNumber()
-		local launch
-		if roll < M.DiveReturnChance then
-			launch = ShotLaunch.diveReturn(p, "Player")
-			diveStats.returns += 1
-			if launch.ok then
-				diveStats.returnsLegal += 1
-			else
-				diveStats.solverFailures += 1
-				warn(("[Rally] dive %d: return solver found no legal path (%s, predicted %s) - unexpected"):format(d.serial, launch.how, launch.result))
-			end
-		else
-			local kinds = M.DiveMishitKinds
-			local kind = kinds[rng:NextInteger(1, #kinds)]
-			launch = ShotLaunch.diveMishit(p, kind, if p.X >= TableWorld.center.X then 1 else -1, "Player")
-			diveStats.mishits += 1
-		end
-		swingUsed = true
-		pressAt[player], pressStroke[player] = nil, nil
-		log(("dive %d: contact %.2f above the table, roll %.3f -> %s (predicted %s)"):format(d.serial, p.Y - Config.Layout.SurfaceY, roll, launch.how, launch.result))
-		strike("Player", launch.velocity, launch.spin)
-		local saved = roll < M.DiveReturnChance
-		setEvent(if saved then "Dive save! (automatic return)" else ("Dive mishit: %s"):format(launch.how))
-		swingResultRemote:FireClient(player, {
-			seq = -2,
-			dive = true,
-			result = if saved then "dive" else "diveMishit",
-			reason = if saved then "dive save" else launch.how,
-			contact = p,
-			roll = roll,
-		})
-		return true
-	end
-
 	-- Per physics tick (240 Hz): the bot's serve strike / the player's judged serve contact, then paddle contacts.
-	local historyLength = SC.MaxLatencyCompensation + 0.05
+	-- (history covers the largest rewind a swing may ask for: latency + the flick recognition interval)
+	local historyLength = SC.MaxLatencyCompensation + Config.Flick.RecognitionAllowance + 0.05
 	local function onTick(s)
 		if phase == "live" or phase == "toss" then
 			table.insert(history, BallPhysics.copyState(s))
@@ -671,24 +610,23 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 				table.remove(history, 1)
 			end
 		end
-		if phase == "toss" then
-			if serveSide == "Bot" then
-				local holdY = Config.Layout.ServeBall.Bot.Y
-				if s.velocity.Y < 0 and s.position.Y <= holdY then
-					local v, w = serveShot("Bot")
-					strike("Bot", v, w)
-				end
-			elseif pendingServe and s.time >= pendingServe.time - 1e-6 then
-				-- the paddle meets the toss now (the contact judged at the release, HitDelay ago)
-				local ps = pendingServe
-				pendingServe = nil
-				strike("Player", ps.velocity, ps.spin)
-				ps.finish()
+		if phase == "toss" and serveSide == "Bot" then
+			local holdY = Config.Layout.ServeBall.Bot.Y
+			if s.velocity.Y < 0 and s.position.Y <= holdY then
+				local v, w = serveShot("Bot")
+				strike("Bot", v, w)
 			end
-		elseif phase == "live" then
-			if diveArmed and not diveArmed.resolved and tryDiveContact(s) then
-				return
-			end
+			return
+		end
+		if pendingContact and (phase == "toss" or phase == "live") and s.time >= pendingContact.time - 1e-6 then
+			-- the paddle meets the ball now (the contact judged at the flick, ContactDelay ago)
+			local pc = pendingContact
+			pendingContact = nil
+			strike("Player", pc.velocity, pc.spin)
+			pc.finish()
+			return
+		end
+		if phase == "live" then
 			for _, side in { "Player", "Bot" } do
 				if (side == "Bot" or (Config.AutoReturn.Enabled and not SC.Enabled)) and referee:canHit(side) then
 					local striker = strikers[side]
@@ -706,7 +644,6 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			end
 		end
 	end
-
 	local events = {}
 	-- Advance the authoritative ball by dt, feeding contacts to the referee and paddles per tick.
 	local function advance(dt: number)
@@ -738,12 +675,10 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			local character = f.player.Character
 			local hum = character and character:FindFirstChildOfClass("Humanoid")
 			if phase ~= "live" or f.player.Parent == nil or not hum or hum.Health <= 0 or avatars.getSeatedPlayer() ~= f.player then
-				pressAt[f.player] = nil
 				endSlowMotion(if phase ~= "live" then "phase over" else "player gone")
 				snapshot()
 			elseif os.clock() > f.startedAt + CF.MaxDuration + SC.MaxLatencyCompensation then
 				swingUsed = true -- the shot is lost: no hit is ever awarded for running out the clock
-				pressAt[f.player] = nil
 				endSlowMotion("ran out")
 				snapshot()
 				setEvent("Swing missed: held too long (slow motion ran out)")
@@ -796,135 +731,54 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		return BallPhysics.copyState(found or history[1] or ball)
 	end
 
-	-- "I started charging": remember WHEN (server time), trusting the client's clock only within
-	-- MaxLatencyCompensation of the moment the message arrived. One small message per press; nothing per frame.
-	-- Charge slow motion: may this press slow the rally? Decided ONLY here, from the server's own ball history and the
-	-- character's replicated position. Returns nothing; starts slow motion when the press qualifies.
-	local function trySlowMotion(player: Player, pressT: number, claimedRoot: any)
-		if not slowMotionAllowed or slowMotion then
-			return
+	-- ===== Player swings: CLICK-AND-FLICK (2026-11-17) =====
+	-- A request = { seq, t (server time the flick STARTED), commitT (server time of the click), stroke, aim, profile,
+	-- flick = { d = distance ref px, u = duration s, x, y = unit direction (screen, y down) }, root }.
+	-- Checks: seated, duplicate seq, rate limit, finite numbers, a plausible flick (ShotInput.validateFlick: otherwise
+	-- REJECTED, never clamped into a shot), the legal state (an incoming ball for the player, or their own toss), one swing
+	-- per ball / toss, a click after the toss started (serves). Timing: t is trusted only within maxRewind of its arrival;
+	-- the paddle meets the ball Flick.ContactDelay after t (Serve.HitDelay for a serve, the same value).
+	local Fl, E = Config.Flick, Config.Emergency
+	local maxRewind = SC.MaxLatencyCompensation + Fl.RecognitionAllowance
+
+	-- The ball at simulation time `simT`: from the recent history when that is in the past, else simulated forward from
+	-- the live ball (the same deterministic physics the live ball will run).
+	local function contactState(simT: number): BallPhysics.State
+		if simT <= ball.time then
+			return stateAt(simT)
 		end
-		if phase ~= "live" or not incomingForPlayer() or not incomingState or swingUsed then
-			return
+		local c = BallPhysics.copyState(ball)
+		while c.time < simT - 1e-6 do
+			BallPhysics.tick(c, cfg, world)
 		end
-		if slowMotionUsedHits == referee.hits then
-			return -- one slow-motion window per incoming ball
-		end
-		local character = player.Character
-		local hum = character and character:FindFirstChildOfClass("Humanoid")
-		local root = rootOf(character)
-		if not root or not hum or hum.Health <= 0 then
-			return
-		end
-		local anchor, reach = reachFor(player, pressStroke[player], claimedRoot)
-		if not anchor then
-			return
-		end
-		-- The ball as the player saw it when pressing: rewound to the validated press time, unless it has bounced since
-		-- (a contact the referee already counted is never undone).
-		local cand = stateAt(pressT - timeOffset)
-		if cand.bounces ~= ball.bounces or cand.time > ball.time then
-			cand = BallPhysics.copyState(ball)
-		end
-		local inc = incomingState :: BallPhysics.State
-		local window = ShotInput.contactWindow(inc, anchor, reach, false)
-		if not window then
-			return -- not reachable from where the player stands: no slow motion (and no free hit)
-		end
-		local rel = cand.time - inc.time
-		if rel < window.ideal - CF.LeadTime or rel > ShotInput.windowEnd(window) then
-			return -- too early (charge in real time instead) or too late
-		end
-		local strikeRel, quality, why = window.ideal, "clean", "on time (slow motion)"
-		local contactPosition = window.idealPosition
-		if rel > window.ideal then
-			-- pressed late in the window: the paddle meets the ball where it is now, with the quality of this moment
-			strikeRel, contactPosition = rel, cand.position
-			quality, why = ShotInput.classify(rel, window)
-			if quality == "miss" then
-				return
-			end
-			why ..= " (slow motion)"
-		end
-		slowMotionSerial += 1
-		slowMotionUsedHits = referee.hits
-		cand.accumulator = 0
-		ball = cand
-		while #history > 0 and history[#history].time > ball.time + 1e-6 do
-			table.remove(history)
-		end
-		arena.Ball.Position = ball.position
-		slowMotion = {
-			id = slowMotionSerial,
-			player = player,
-			startedAt = os.clock(),
-			startServer = workspace:GetServerTimeNow(),
-			startSimTime = ball.time,
-			incTime = inc.time,
-			strikeRel = strikeRel,
-			quality = quality,
-			why = why,
-			contactPosition = contactPosition,
-		}
-		slowMotion.kind = "charge"
-		MovementService.setSlowMotion(player, CF.TimeScale)
-		slowBot(true)
-		log(("charge slow motion %d: contact in %.3fs (%s)"):format(slowMotionSerial, strikeRel - rel, quality))
+		return c
 	end
 
-	-- "I started charging": remember WHEN (server time), trusting the client's clock only within
-	-- MaxLatencyCompensation of the moment the message arrived. One small message per press; nothing per frame.
-	-- { cancel = true }: the client gave up the charge (focus lost, input cancelled): normal speed resumes and the
-	-- player keeps the swing (slow motion stays used for this ball).
-	chargeRemote.OnServerEvent:Connect(function(player, req)
-		if not SC.Enabled or typeof(req) ~= "table" then
-			return
-		end
-		if req.cancel == true then
-			pressAt[player], pressStroke[player] = nil, nil
-			if slowMotion and slowMotion.player == player then
-				endSlowMotion("cancelled")
-				snapshot()
+	-- Apply a judged player contact: now (rewind to it, hit, re-simulate to the present; never steered afterwards) or, when
+	-- it is still ahead, on the physics tick that reaches it (pendingContact).
+	local function applyContact(contact: BallPhysics.State, velocity: Vector3, spin: Vector3, finish: () -> ())
+		if contact.time <= ball.time + 1e-6 then
+			local catchUp = math.max(ball.time - contact.time, 0)
+			contact.accumulator = 0
+			ball = contact
+			ball.resting = false
+			strike("Player", velocity, spin)
+			while catchUp > 1e-6 and phase == "live" do
+				local chunk = math.min(catchUp, cfg.fixedStep * cfg.maxStepsPerUpdate * 0.9)
+				advance(chunk)
+				catchUp -= chunk
 			end
-			return
+			finish()
+		else
+			pendingContact = { time = contact.time, velocity = velocity, spin = spin, finish = finish }
 		end
-		if not finite(req.t) then
-			return
-		end
-		local now = os.clock()
-		if now - (lastPressMsg[player] or -math.huge) < 0.05 then
-			return -- spam
-		end
-		lastPressMsg[player] = now
-		if avatars.getSeatedPlayer() ~= player then
-			return
-		end
-		local serverNow = workspace:GetServerTimeNow()
-		if serveSide == "Player" and (phase == "windup" or phase == "toss") then
-			-- the player's serve: a FRESH press after the toss began (a button held from before never counts), with the
-			-- aim locked now (the cursor's later movement only shapes the spin)
-			if servePlayer ~= player or swingUsed or req.t < serveBeganServer - SC.MaxLatencyCompensation then
-				return
-			end
-			pressAt[player] = math.clamp(req.t, serverNow - SC.MaxLatencyCompensation, serverNow)
-			pressStroke[player] = ServeRules.postureStroke(servePosture) -- the serve stroke is the locked posture's
-			pressAim[player] = if finite(req.aim) then math.clamp(req.aim, -1, 1) else 0
-			pressAck = req.t
-			snapshot()
-			return
-		end
-		pressAt[player] = math.clamp(req.t, serverNow - SC.MaxLatencyCompensation, serverNow)
-		pressStroke[player] = if req.stroke == "Backhand" then "Backhand" else "Forehand"
-		pressAck = req.t
-		trySlowMotion(player, pressAt[player], req.root)
-		snapshot() -- always answer: slow or normal (a client that predicted slow motion corrects itself from this)
-	end)
+	end
 
-	-- The player's launch from a judged contact: spin from the drag, the deterministic timing error (offset from the
-	-- ideal moment), stretch (distance from the stroke's anchor) and the SMASH check, all through the shared ShotLaunch
-	-- (the arrow runs the same code). Returns the launch, the spin used, whether it was a smash, and the stretch.
-	local function playerLaunch(contact: BallPhysics.State, power: number, dx: number, dy: number, quality: string, offset: number, stroke: string, anchor: Vector3)
-		local top, side = ShotInput.dragToSpin(dx, dy) -- clamped to MaxSpin
+	-- The player's normal launch from a judged contact: the flick's power and spin, the locked base aim and profile, the
+	-- deterministic timing error (offset from the ideal moment), stretch (distance from the stroke's anchor) and the SMASH
+	-- check, all through the shared ShotLaunch (the client's post-flick prediction runs the same code).
+	local function playerLaunch(contact: BallPhysics.State, fl, quality: string, offset: number, stroke: string, anchor: Vector3, aim: number, profile: number)
+		local top, side, power = fl.topspin, fl.sidespin, fl.power
 		local p = contact.position
 		local smash = (quality == "clean" or quality == "weak") and ShotInput.smashEligible(p, power)
 		local opts: ShotLaunch.Options = {
@@ -933,39 +787,36 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			timing = ShotInput.timingValue(offset),
 			stretch = Vector2.new(p.X - anchor.X, p.Z - anchor.Z).Magnitude / SC.PaddleReach,
 			smash = smash,
+			aim = aim,
+			profile = profile,
 		}
 		if quality == "weak" and not smash then
 			top, side = top * SC.WeakSpinFactor, side * SC.WeakSpinFactor
 			opts.speedFactor = SC.WeakSpeedFactor
 		end
-		if quality == "weak" and (SC.WeakAimError or 0) > 0 then -- (legacy random error; 0 = off)
-			local e = SC.WeakAimError
-			opts.aimOffset = Vector3.new(rng:NextNumber(-e, e), 0, rng:NextNumber(-e, e))
-		end
 		return ShotLaunch.compute(p, power, top, side, opts), top, side, smash, opts.stretch :: number
 	end
 
-	-- The player's strike at their own toss (2026-11-16 pass 3). Judged on the server's own simulation of the toss at the
-	-- validated release time: the paddle meets the ball HitDelay later, and if that is inside the toss's CONTACT PHASE
-	-- (ServeRules.phase: falling, in the height band, in the locked stroke's reach) the serve is LEGAL, launched by
-	-- ShotLaunch.serve (solved before the contact, never steered). The contact is applied on the physics tick that reaches
-	-- it (pendingServe) or, when latency put it in the past, by rewinding to it and re-simulating. One swing per toss.
+	-- The player's strike at their own toss. Judged on the server's own simulation of the toss at the validated flick
+	-- time: the paddle meets the ball HitDelay later, and if that is inside the toss's CONTACT PHASE (ServeRules.phase:
+	-- falling, in the height band, in the locked posture-stroke's reach) the serve is LEGAL, launched by ShotLaunch.serve
+	-- with the flick's power and spin and the aim locked at the click (solved before the contact, never steered).
 	local serveStats = { swings = 0, legal = 0, weak = 0, misses = 0, solverFailures = 0 }
-	local function judgeServe(player: Player, req, reply)
+	local function judgeServe(player: Player, req, reply, fl)
 		if swingUsed then
 			return reply("rejected", "already swung at this toss")
+		end
+		if not finite(req.commitT) or req.commitT < serveBeganServer - SC.MaxLatencyCompensation then
+			return reply("rejected", "click after the toss") -- a click held from before the toss never counts
 		end
 		swingUsed = true
 		serveStats.swings += 1
 		local serverNow = workspace:GetServerTimeNow()
-		local release = math.clamp(req.t, serverNow - SC.MaxLatencyCompensation, serverNow)
-		local pressed = pressAt[player]
+		local flickT = math.clamp(req.t, serverNow - maxRewind, serverNow)
 		local stroke = ServeRules.postureStroke(servePosture) -- the locked posture decides the serve stroke (never the cursor)
-		local aim = pressAim[player] or 0
-		pressAt[player], pressStroke[player], pressAim[player] = nil, nil, nil
-		local hold = if pressed then math.clamp(release - pressed, 0, 5) else 0
-		local power = ShotLaunch.powerFromHold(hold)
-		local info: { [string]: any } = { hold = hold, power = power, stroke = stroke, aim = aim, serve = true }
+		local aim = if finite(req.aim) then math.clamp(req.aim, -1, 1) else 0
+		local power, top, side = fl.power, fl.topspin, fl.sidespin
+		local info: { [string]: any } = { power = power, stroke = stroke, aim = aim, serve = true, flickSpeed = fl.speed }
 		local function missed(why: string)
 			serveStats.misses += 1
 			snapshot()
@@ -980,28 +831,18 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		if not anchor then
 			return missed("no character")
 		end
-		local simRelease = release - timeOffset
+		local simFlick = flickT - timeOffset
 		local toss = tossState :: BallPhysics.State
 		local window = ServeRules.phase(toss, anchor, SC.PaddleReach)
-		local rel = simRelease - toss.time
+		local rel = simFlick - toss.time
 		local quality, why = ServeRules.classify(rel, window)
 		info.offset, info.anchor = if window then rel - window.ideal else 0, anchor
 		info.window = window and { enter = window.enter - rel, ideal = window.ideal - rel, exit = window.exit - rel } or nil
+		info.contactT = flickT + Config.Serve.HitDelay
 		if quality == "miss" then
 			return missed(why)
 		end
-		-- the ball where the paddle meets it
-		local contactTime = simRelease + Config.Serve.HitDelay
-		local contact
-		if contactTime <= ball.time then
-			contact = stateAt(contactTime)
-		else
-			contact = BallPhysics.copyState(ball)
-			while contact.time < contactTime - 1e-6 do
-				BallPhysics.tick(contact, cfg, world)
-			end
-		end
-		local top, side = ShotInput.dragToSpin(req.dx, req.dy)
+		local contact = contactState(simFlick + Config.Serve.HitDelay)
 		if quality == "weak" then
 			top, side = top * SC.WeakSpinFactor, side * SC.WeakSpinFactor
 		end
@@ -1018,26 +859,162 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		info.contact, info.velocity, info.spin, info.topspin, info.sidespin = contact.position, shot.velocity, shot.spin, top, side
 		info.contactHeight = contact.position.Y - Config.Layout.SurfaceY
 		info.solve, info.target = shot.how, shot.secondBounce
-		local function finish()
+		applyContact(contact, shot.velocity, shot.spin, function()
 			arena.Ball.Position = ball.position
 			snapshot()
 			setEvent(("You serve (%s %s, %s, power %d%%, aim %+.2f): %s"):format(string.lower(stroke), quality, why, math.floor(power * 100 + 0.5), aim, shot.how))
+		end)
+		reply(quality, why, info)
+	end
+
+	-- A rally swing at the incoming ball. NORMAL: the ball's path enters the stroke's reach -> the contact must fall in
+	-- that contact window. EMERGENCY: the path never enters the normal reach but passes through the outer ring -> the
+	-- contact must fall in the ring's window; a hit is the defensive lob. A ball inside the ring at the contact time is an
+	-- emergency ATTEMPT (the body commits to the reach: the get-up's speed reduction applies), hit or miss.
+	local function judgeRally(player: Player, req, reply, fl)
+		if phase ~= "live" or not incomingForPlayer() or not incomingState then
+			return reply("rejected", "no ball to hit")
 		end
-		if contact.time <= ball.time + 1e-6 then
-			local catchUp = math.max(ball.time - contact.time, 0)
-			contact.accumulator = 0
-			ball = contact
-			ball.resting = false
-			strike("Player", shot.velocity, shot.spin)
-			while catchUp > 1e-6 and phase == "live" do
-				local chunk = math.min(catchUp, cfg.fixedStep * cfg.maxStepsPerUpdate * 0.9)
-				advance(chunk)
-				catchUp -= chunk
-			end
-			finish()
+		if swingUsed then
+			return reply("rejected", "already swung at this ball")
+		end
+		local stroke = if req.stroke == "Backhand" then "Backhand" else "Forehand"
+		local aim = if finite(req.aim) then math.clamp(req.aim, -1, 1) else 0
+		local profile = if finite(req.profile) then math.clamp(req.profile, 0, 1) else 0.5
+		local anchor, reach, refuse = reachFor(player, stroke, req.root)
+		if not anchor then
+			return reply("rejected", refuse or "no character")
+		end
+		swingUsed = true
+		swingStats.swings += 1
+		local serverNow = workspace:GetServerTimeNow()
+		local flickT = math.clamp(req.t, serverNow - maxRewind, serverNow)
+		local contactSim = flickT - timeOffset + Fl.ContactDelay
+		local inc = incomingState :: BallPhysics.State
+		local rel = contactSim - inc.time
+		local kind = "normal"
+		local window = ShotInput.contactWindow(inc, anchor, reach, false)
+		local quality, why, offset
+		if window then
+			quality, why, offset = ShotInput.classify(rel, window)
 		else
-			pendingServe = { time = contact.time, velocity = shot.velocity, spin = shot.spin, finish = finish }
+			-- (the save ring keeps the falling-ball rule: emergency-save rules are unchanged by the rising-ball change)
+			local outer = if E.Enabled then ShotInput.contactWindow(inc, anchor, ShotInput.emergencyReach(SC), false, nil, true) else nil
+			if outer then
+				kind, window = "emergency", outer
+				quality, why, offset = ShotInput.classify(rel, outer)
+			else
+				quality, why, offset = "miss", "ball never in reach", 0
+			end
 		end
+		local w = window
+		local info: { [string]: any } = {
+			kind = kind,
+			offset = offset,
+			lag = serverNow - flickT,
+			power = fl.power,
+			flickSpeed = fl.speed,
+			anchor = anchor,
+			stroke = stroke,
+			aim = aim,
+			profile = profile,
+			contactT = flickT + Fl.ContactDelay, -- server time the paddle meets the ball (the client syncs its swing to it)
+			window = w and { enter = w.enter - rel, ideal = w.ideal - rel, exit = w.exit - rel } or nil,
+		}
+		-- (telemetry, diagnosis only) compare with the OTHER legal-contact rule (Config.ShotControl.RequireFallingBall):
+		--   rule off (now): risingHit = this contact was accepted but the old "falling, or past the end line" rule would have
+		--                   refused it (the ball was still rising); risingGap = how much earlier the window opens now
+		--   rule on:        risingBlocked = refused only because the ball was still rising inside the reach
+		if TEL.Enabled then
+			local fallingRule = SC.RequireFallingBall == true
+			local alt = ShotInput.contactWindow(inc, anchor, reach, false, nil, not fallingRule)
+			local normalW = if kind == "normal" then w else nil
+			if fallingRule then
+				if alt then
+					info.risingGap = if normalW then normalW.enter - alt.enter else nil
+					info.risingBlocked = quality == "miss" and rel >= alt.enter and rel <= alt.exit and (normalW == nil or rel < normalW.enter)
+					if info.risingBlocked then
+						swingStats.risingBlocked += 1
+					end
+				end
+			elseif normalW then
+				info.risingGap = if alt then alt.enter - normalW.enter else nil
+				info.risingHit = quality ~= "miss" and (alt == nil or rel < alt.enter or rel > alt.exit)
+				if info.risingHit then
+					swingStats.risingHit += 1
+				end
+			end
+		end
+		if kind == "emergency" and w and rel >= w.enter and rel <= w.exit then
+			saveStats.attempts += 1
+			info.lunge = true
+			-- the get-up: from landing (contact + LandDelay) for StandUpTime, WalkSpeed x RecoverySpeedFactor
+			local landIn = (flickT + Fl.ContactDelay + E.LandDelay) - serverNow
+			MovementService.setRecovery(player, landIn, E.StandUpTime, E.RecoverySpeedFactor)
+		end
+		if quality == "clean" then
+			swingStats.clean += 1
+		elseif quality == "weak" then
+			swingStats.weak += 1
+		else
+			local r = string.lower(why)
+			if string.find(r, "early") then
+				swingStats.earlyMiss += 1
+			elseif string.find(r, "late") then
+				swingStats.lateMiss += 1
+			else
+				swingStats.noReach += 1
+			end
+		end
+		if w and kind then
+			swingStats.offsetSum += offset
+			swingStats.offsetN += 1
+		end
+		if quality == "miss" then
+			if kind == "emergency" then
+				saveStats.misses += 1
+			end
+			swingStats.misses += 1
+			setEvent("Swing missed: " .. why)
+			telSwing(info, "miss", why)
+			return reply("miss", why, info)
+		end
+		local contact = contactState(contactSim)
+		info.contact = contact.position
+		if kind == "emergency" then
+			-- the defensive lob: the flick's spin heavily reduced and capped; its power plays no part (never an attack)
+			local top = math.clamp(fl.topspin * E.SpinFactor, -E.MaxSpin, E.MaxSpin)
+			local side = math.clamp(fl.sidespin * E.SpinFactor, -E.MaxSpin, E.MaxSpin)
+			local shot = ShotLaunch.emergencyLob(contact.position, aim, top, side, "Player")
+			saveStats.saves += 1
+			if shot.ok then
+				saveStats.legal += 1
+			else
+				saveStats.solverFailures += 1
+				warn(("[Rally] emergency save: no legal lob found (%s) - unexpected"):format(shot.how))
+			end
+			info.topspin, info.sidespin, info.solve, info.velocity, info.spin = top, side, shot.how, shot.velocity, shot.spin
+			telLand(info, contact.position, shot.velocity, shot.spin)
+			telSwing(info, quality, why)
+			applyContact(contact, shot.velocity, shot.spin, function()
+				arena.Ball.Position = ball.position
+				snapshot()
+				setEvent(("Emergency save! (%s %s, %s)"):format(string.lower(stroke), quality, shot.how))
+			end)
+			return reply(quality, why, info)
+		end
+		local shot, top, side, smash, stretch = playerLaunch(contact, fl, quality, offset, stroke, anchor :: Vector3, aim, profile)
+		swingStats.normal += 1
+		info.aimPoint, info.topspin, info.sidespin, info.solve = shot.aim, top, side, shot.how
+		info.velocity, info.spin = shot.velocity, shot.spin
+		info.smash, info.stretch, info.yawError, info.pitchError = smash, stretch, shot.yawError, shot.pitchError
+		telLand(info, contact.position, shot.velocity, shot.spin)
+		telSwing(info, quality, why)
+		applyContact(contact, shot.velocity, shot.spin, function()
+			arena.Ball.Position = ball.position
+			snapshot()
+			setEvent(("You hit (%s %s%s, %s, power %d%%, aim %+.2f, arc %.2f): %s"):format(string.lower(stroke), if smash then "SMASH " else "", quality, why, math.floor(fl.power * 100 + 0.5), aim, profile, shot.how))
+		end)
 		reply(quality, why, info)
 	end
 
@@ -1050,8 +1027,15 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			for k, v in extra or {} do
 				msg[k] = v
 			end
+			if result == "rejected" then
+				swingStats.rejected += 1
+			end
 			swingResultRemote:FireClient(player, msg)
 		end
+		if req.seq <= (lastSeq[player] or -math.huge) then
+			return reply("rejected", "duplicate request")
+		end
+		lastSeq[player] = req.seq
 		local now = os.clock()
 		if now - (lastSwing[player] or -math.huge) < SC.SwingCooldown then
 			return reply("rejected", "too many swings")
@@ -1060,165 +1044,26 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		if avatars.getSeatedPlayer() ~= player then
 			return reply("rejected", "not seated")
 		end
-		local dx, dy, t = req.dx, req.dy, req.t
-		if not (finite(dx) and finite(dy) and finite(t)) then
+		if not finite(req.t) then
 			return reply("rejected", "bad input")
 		end
-
-		-- The player's own serve toss.
+		local ok, speed, dirX, dirY, why = ShotInput.validateFlick(req.flick)
+		if not ok then
+			return reply("rejected", why) -- invalid or extreme input never becomes a shot
+		end
+		local power, top, side = ShotInput.flickShot(speed, dirX, dirY)
+		local fl = { speed = speed, dirX = dirX, dirY = dirY, power = power, topspin = top, sidespin = side }
 		if serveSide == "Player" and (phase == "windup" or phase == "toss") and servePlayer == player then
-			return judgeServe(player, req, reply)
+			return judgeServe(player, req, reply, fl)
 		end
-
-		-- A slow-motion release uses the same server-side contact window, mapped from real release time into the slowed
-		-- simulation timeline. Charge power still uses real elapsed time.
-		if slowMotion and slowMotion.player == player then
-			local f = slowMotion
-			if swingUsed then
-				endSlowMotion("already swung")
-				snapshot()
-				return reply("rejected", "already swung at this ball")
-			end
-			local serverNow = workspace:GetServerTimeNow()
-			local release = math.clamp(t, serverNow - SC.MaxLatencyCompensation, serverNow)
-			local pressed = pressAt[player]
-			local stroke = pressStroke[player] or "Forehand"
-			pressAt[player], pressStroke[player] = nil, nil
-			local hold = if pressed then math.clamp(release - pressed, 0, CF.MaxDuration + SC.MaxLatencyCompensation) else 0
-			local power = ShotLaunch.powerFromHold(hold)
-			local simRelease = f.startSimTime + math.max(release - f.startServer, 0) * CF.TimeScale
-			local inc = incomingState :: BallPhysics.State
-			local anchor, reach, refuse = reachFor(player, stroke, req.root)
-			if not anchor then
-				swingUsed = true
-				endSlowMotion(refuse or "no character")
-				snapshot()
-				setEvent("Swing missed: " .. (refuse or "no character"))
-				return reply("miss", refuse or "no character")
-			end
-			local window = ShotInput.contactWindow(inc, anchor, reach, false)
-			local rel = simRelease - inc.time
-			local quality, why, offset = ShotInput.classify(rel, window)
-			local info = {
-				offset = offset,
-				lag = serverNow - release,
-				hold = hold,
-				power = power,
-				anchor = anchor,
-				stroke = stroke,
-				window = window and { enter = window.enter - rel, ideal = window.ideal - rel, exit = window.exit - rel } or nil,
-			}
-			swingUsed = true
-			if quality == "miss" then
-				endSlowMotion("missed")
-				snapshot()
-				setEvent("Swing missed: " .. why)
-				return reply("miss", why, info)
-			end
-
-			local contact = stateAt(simRelease)
-			local shot, top, side, smash, stretch = playerLaunch(contact, power, dx, dy, quality, offset, stroke, anchor :: Vector3)
-			endSlowMotion("released")
-			local catchUp = math.max(ball.time - contact.time, 0)
-			contact.accumulator = 0
-			ball = contact
-			ball.resting = false
-			strike("Player", shot.velocity, shot.spin)
-			while catchUp > 1e-6 and phase == "live" do
-				local chunk = math.min(catchUp, cfg.fixedStep * cfg.maxStepsPerUpdate * 0.9)
-				advance(chunk)
-				catchUp -= chunk
-			end
-			arena.Ball.Position = ball.position
-			snapshot()
-			setEvent(("You hit (%s %s%s, %s, power %d%%): %s"):format(string.lower(stroke), if smash then "SMASH " else "", quality, why, math.floor(power * 100 + 0.5), shot.how))
-			info.aim, info.topspin, info.sidespin, info.solve = shot.aim, top, side, shot.how
-			info.contact, info.velocity, info.spin = contact.position, shot.velocity, shot.spin
-			info.smash, info.stretch, info.yawError, info.pitchError = smash, stretch, shot.yawError, shot.pitchError
-			reply(quality, why, info)
-			return
-		end
-
-		if phase ~= "live" or not incomingForPlayer() or not incomingState then
-			return reply("rejected", "no ball to hit")
-		end
-		if swingUsed then
-			return reply("rejected", "already swung at this ball")
-		end
-		local anchor, reach, refuse = reachFor(player, pressStroke[player], req.root)
-		if not anchor then
-			if refuse and refuse ~= "no character" then
-				-- recovering from a dive: the swing is spent, no contact (no free retries during the get-up)
-				swingUsed = true
-				pressAt[player], pressStroke[player] = nil, nil
-				setEvent("Swing missed: " .. refuse)
-				return reply("miss", refuse)
-			end
-			return reply("rejected", "no character")
-		end
-		swingUsed = true
-
-		-- When did the player release? Trust the client's clock only within MaxLatencyCompensation of now.
-		local serverNow = workspace:GetServerTimeNow()
-		local release = math.clamp(t, serverNow - SC.MaxLatencyCompensation, serverNow)
-		-- Charge, measured by the server: release minus the validated press time (no press on record = no charge).
-		local pressed = pressAt[player]
-		local stroke = pressStroke[player] or "Forehand"
-		pressAt[player], pressStroke[player] = nil, nil
-		local hold = if pressed then math.max(release - pressed, 0) else 0
-		local power = ShotLaunch.powerFromHold(hold)
-		local simRelease = release - timeOffset
-		local inc = incomingState :: BallPhysics.State
-		local window = ShotInput.contactWindow(inc, anchor, reach, false)
-		local quality, why, offset = ShotInput.classify(simRelease - inc.time, window)
-		local rel = simRelease - inc.time
-		local info = { -- (diagnostics: the server's view, shown by the client panel)
-			offset = offset,
-			lag = serverNow - release,
-			hold = hold,
-			power = power,
-			anchor = anchor,
-			stroke = stroke,
-			window = window and { enter = window.enter - rel, ideal = window.ideal - rel, exit = window.exit - rel } or nil,
-		}
-		if quality == "miss" then
-			setEvent("Swing missed: " .. why)
-			return reply("miss", why, info)
-		end
-
-		-- Contact: where the ball actually was at the release moment.
-		local contact = stateAt(simRelease)
-		local shot, top, side, smash, stretch = playerLaunch(contact, power, dx, dy, quality, offset, stroke, anchor :: Vector3)
-		local how = shot.how
-
-		-- Rewind to the contact moment, hit, then re-simulate up to now (the ball is never steered afterwards).
-		local catchUp = math.max(ball.time - contact.time, 0)
-		contact.accumulator = 0 -- catch-up below re-simulates exactly the elapsed ticks
-		ball = contact
-		ball.resting = false
-		strike("Player", shot.velocity, shot.spin)
-		while catchUp > 1e-6 and phase == "live" do
-			local chunk = math.min(catchUp, cfg.fixedStep * cfg.maxStepsPerUpdate * 0.9)
-			advance(chunk)
-			catchUp -= chunk
-		end
-		arena.Ball.Position = ball.position
-		snapshot()
-		setEvent(("You hit (%s %s%s, %s, power %d%%): %s"):format(string.lower(stroke), if smash then "SMASH " else "", quality, why, math.floor(power * 100 + 0.5), how))
-		info.aim, info.topspin, info.sidespin, info.solve = shot.aim, top, side, how
-		info.contact, info.velocity, info.spin = contact.position, shot.velocity, shot.spin
-		info.smash, info.stretch, info.yawError, info.pitchError = smash, stretch, shot.yawError, shot.pitchError
-		reply(quality, why, info)
+		return judgeRally(player, req, reply, fl)
 	end)
 	Players.PlayerRemoving:Connect(function(p)
-		lastSwing[p] = nil
-		pressAt[p], pressStroke[p], pressAim[p] = nil, nil, nil
-		lastPressMsg[p] = nil
+		lastSwing[p], lastSeq[p] = nil, nil
 		if servePlayer == p then
 			servePlayer = nil
 		end
 	end)
-
 	local function scheduleBotServe()
 		local mySerial = serial
 		task.delay(Config.Serve.BotDelay + Config.Timing.ServeReadyDelay, function()
@@ -1256,21 +1101,23 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		bridge.Name = "NotPongRallyDebug"
 		bridge.OnInvoke = function(cmd: string?)
 			if cmd == "reset" then
-				for k in diveStats do
-					diveStats[k] = 0
-				end
-				for k in serveStats do
-					serveStats[k] = 0
+				for _, t in { saveStats, serveStats, swingStats } do
+					for k in t do
+						t[k] = 0
+					end
 				end
 			end
 			return {
 				phase = phase,
 				refereePhase = referee.phase,
 				hits = referee.hits,
-				dive = table.clone(diveStats),
+				save = table.clone(saveStats),
+				swing = table.clone(swingStats),
 				serve = table.clone(serveStats),
 				slowMotion = slowMotion ~= nil,
-				diveArmed = diveArmed ~= nil and not diveArmed.resolved,
+				pendingContact = pendingContact ~= nil,
+				incoming = incomingForPlayer(),
+				swingUsed = swingUsed,
 			}
 		end
 		bridge.Parent = game:GetService("ServerStorage")
@@ -1285,7 +1132,8 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			return phase
 		end,
 		referee = referee,
-		diveStats = diveStats, -- (tests / diagnostics: live counters)
+		saveStats = saveStats, -- (tests / diagnostics: live counters)
+		swingStats = swingStats,
 		serveStats = serveStats,
 	}
 end

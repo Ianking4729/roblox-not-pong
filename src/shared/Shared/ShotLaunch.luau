@@ -1,25 +1,26 @@
 --!strict
--- ShotLaunch: the CHARGE -> CURVE -> RELEASE shot model. Pure and deterministic: the server uses it for the real shot,
--- the client uses it for the 3D trajectory arrow, so both get the identical launch from the identical inputs.
+-- ShotLaunch: the shot model (CLICK-AND-FLICK since 2026-11-17). Pure and deterministic: the server uses it for the real
+-- shot, the client for its post-flick prediction, so both get the identical launch from the identical inputs.
 -- No Instances, no input, no networking.
 --
---   power (0..1, from hold time only)  -> launch speed + a calibration depth
---   spin (from the mouse drag)          -> topspin / sidespin, applied in FULL to the launch
---   contact point                       -> where the flight starts
+--   power (0..1, from the flick's speed) -> launch speed + a calibration depth
+--   spin (from the flick's direction)    -> topspin / sidespin, applied in FULL to the launch
+--   base aim + profile (locked at click) -> the calibration point's side and the drive / arc speed, depth, clearance
+--   contact point                        -> where the flight starts
 --
 -- The launch DIRECTION and ELEVATION are calibrated so that a shot of this power, with only part of its spin
--- (Top/Back/SidespinCompensation), would land at a default point on the opponent's half: straight ahead-ish (FollowLateral),
--- deeper for more power (Min/MaxShotDepth). Then the ball is launched with ALL of its spin and flies by the real
--- physics, so spin genuinely changes the path and the landing (topspin dips and lands shorter, backspin floats
--- longer, sidespin curves sideways), and a shot can miss. Nothing is steered after contact. The cursor plays no part.
+-- (Top/Back/SidespinCompensation), would land at a point on the opponent's half: on the side the BASE AIM locked at the
+-- click points to (opts.aim; without it the old default FollowLateral direction), deeper for more power
+-- (Min/MaxShotDepth) and for a higher-arc profile (Config.Prep). Then the ball is launched with ALL of its spin and flies
+-- by the real physics, so spin genuinely changes the path and the landing (topspin dips and lands shorter, backspin
+-- floats longer, sidespin curves sideways) around the base aim, and a shot can miss. Nothing is steered after contact.
 --
 -- TIMING ERROR (2026-11-15): after the calibration, the launch direction and elevation are turned by a DETERMINISTIC
--- error from the release timing (opts.timing, ShotInput.timingValue), scaled by the shot's risk (power, stretch, smash;
+-- error from the contact timing (opts.timing, ShotInput.timingValue), scaled by the shot's risk (power, stretch, smash;
 -- Config.ShotControl.Error* / Timing*). Early = across the body and higher (long); late = the other way and lower (net).
--- The client's arrow calls compute with "release right now", so it shows exactly this error; nothing is random.
+-- The client's post-flick prediction calls compute with the same timing, so it shows exactly this error; nothing is random.
 -- SMASH (opts.smash): faster, deeper, half the spin, SmashTimingMultiplier x the full-power risk.
--- PLAYER SERVE (ShotLaunch.serve) and AUTOMATIC DIVE RETURNS (diveReturn / diveMishit) are solved here too
--- (2026-11-16 pass 3), with the same physics.
+-- PLAYER SERVE (ShotLaunch.serve) and the EMERGENCY SAVE lob (emergencyLob) are solved here too, with the same physics.
 
 local Config = require(script.Parent:WaitForChild("Config"))
 local BallPhysics = require(script.Parent:WaitForChild("BallPhysics"))
@@ -48,16 +49,6 @@ export type PathResult = {
 
 local function lerp(a: number, b: number, t: number): number
 	return a + (b - a) * t
-end
-
--- Hold duration (seconds) -> power 0..1.
-function ShotLaunch.powerFromHold(hold: number): number
-	local S = Config.ShotControl
-	if hold ~= hold then
-		return 0
-	end
-	local n = math.clamp(hold / math.max(S.ChargeTime, 1e-3), 0, 1)
-	return n ^ S.ChargeExponent
 end
 
 -- Horizontal launch speed for a power.
@@ -95,7 +86,20 @@ export type Options = {
 	stretch: number?, -- contact distance from the paddle anchor / reach (0..1+)
 	stroke: string?, -- "Forehand" | "Backhand": which way "across the body" is
 	smash: boolean?,
+	-- click-and-flick (2026-11-17): the base aim locked at the click. nil = the old default direction (FollowLateral)
+	aim: number?, -- -1 .. 1 across the opponent's half, as the HITTER sees it (+ = their right)
+	profile: number?, -- 0 (low drive) .. 1 (high arc)
 }
+
+-- The lateral world-X offset for a base aim (-1..1, the hitter's own left/right) on the opponent's half. The hitter at
+-- the Player end faces -Z (their right = world +X); at the Bot end their right is -X.
+function ShotLaunch.aimLateral(aim: number, hitter: string?): number
+	local S, P = Config.ShotControl, Config.Prep
+	local maxX = math.max(TableWorld.halfWidth - S.LateralMargin, 0)
+	local rightIsPlusX = (hitter or "Player") == "Player"
+	local x = math.clamp(aim, -1, 1) * maxX * P.AimLateral
+	return if rightIsPlusX then x else -x
+end
 
 local function ramp(x: number, from: number): number
 	return math.clamp((x - from) / math.max(1 - from, 1e-3), 0, 1)
@@ -155,16 +159,28 @@ function ShotLaunch.compute(contact: Vector3, power: number, topspin: number, si
 	local spinFrac = math.clamp(topspin / math.max(S.MaxSpin, 1e-3), -1, 1)
 	local spinSpeed = if spinFrac >= 0 then 1 + (S.TopspinSpeedBonus or 0) * spinFrac else 1 + (S.BackspinSpeedPenalty or 0) * spinFrac
 	local baseSpeed = if smash then S.SmashSpeed else ShotLaunch.speedFor(power)
-	local speed = baseSpeed * spinSpeed * (opts and opts.speedFactor or 1)
+	-- the drive / arc profile (Config.Prep): a high arc launches slower for the same landing (a higher flight), lands a
+	-- little deeper and asks the calibration for more net clearance
+	local P = Config.Prep
+	local profile = if opts and opts.profile and not smash then math.clamp(opts.profile, 0, 1) else nil
+	local profileSpeed = if profile then lerp(P.DriveSpeedFactor, P.ArcSpeedFactor, profile) else 1
+	local speed = baseSpeed * spinSpeed * profileSpeed * (opts and opts.speedFactor or 1)
 	local depth = if smash then S.SmashDepth else nil
+	if profile then
+		depth = math.clamp(lerp(S.MinShotDepth, S.MaxShotDepth, math.clamp(power, 0, 1)) + lerp(P.DriveDepthBonus, P.ArcDepthBonus, profile), 0.2, 0.92)
+	end
 	local aim = ShotLaunch.aimPoint(contact, power, opponent, opts and opts.aimOffset, depth)
+	if opts and opts.aim then
+		-- the locked base aim replaces the default direction (spin then bends the real flight around it)
+		aim = Vector3.new(TableWorld.center.X + ShotLaunch.aimLateral(opts.aim, hitter), aim.Y, aim.Z)
+	end
 	local solveOpts: ShotSolver.Options = {
 		speed = speed,
 		topspin = topspin * (if topspin >= 0 then S.TopspinCompensation else S.BackspinCompensation),
 		sidespin = sidespin * S.SidespinCompensation,
 		netZ = TableWorld.netZ,
 		netTopY = TableWorld.netTopY,
-		clearance = Config.Rally.NetClearance,
+		clearance = if profile then lerp(Config.Rally.NetClearance, P.ArcClearance, profile) else Config.Rally.NetClearance,
 		edgeZ = TableWorld.endLineZ(hitter), -- a contact below table height must clear our own table edge
 		edgeTopY = Config.Layout.SurfaceY,
 		maxTime = 3,
@@ -581,14 +597,16 @@ function ShotLaunch.serve(contact: Vector3, power: number, topspin: number, side
 	})
 end
 
--- AUTOMATIC DIVE RETURN (Config.Movement.DiveReturn*; 2026-11-16 pass 3). A defensive emergency return (never a charged
--- shot): moderate pace, a little topspin, toward the middle of the opponent's half. Solved with the shared physics and
--- checked by simulating the whole flight; slower / more central alternatives are tried before giving up. ok = false only
--- when no attempt lands legally (an unexpected solver failure: the server logs it separately and still plays the best
--- attempt, physically). Decided once at the contact; nothing is steered afterwards.
-export type DiveLaunch = Launch & { ok: boolean, result: string }
+-- EMERGENCY SAVE (Config.Emergency; 2026-11-17, replaces the automatic dive return and its mishits). A successful
+-- emergency contact is a DEFENSIVE lob, never an attack: the SLOWEST launch speed of Emergency.Speeds (slow to fast)
+-- whose flight lands legally AND peaks no higher than MaxApex above the table, toward Depth on the opponent's half,
+-- following the locked base aim by AimFollow, with the flick's spin already capped by the caller (SpinFactor / MaxSpin).
+-- Each try is a bounded solve; past SolveBudget seconds the remaining (faster, cheaper) speeds aim at the centre. ok =
+-- false only when nothing lands legally (an unexpected solver failure: logged by the server, the best attempt still flies
+-- physically). Decided once at the contact; nothing is steered afterwards.
+export type SaveLaunch = Launch & { ok: boolean, result: string }
 
-local function launchOf(velocity: Vector3, spin: Vector3, aim: Vector3, how: string, ok: boolean, result: string): DiveLaunch
+local function launchOf(velocity: Vector3, spin: Vector3, aim: Vector3, how: string, ok: boolean, result: string): SaveLaunch
 	return {
 		velocity = velocity,
 		spin = spin,
@@ -603,29 +621,25 @@ local function launchOf(velocity: Vector3, spin: Vector3, aim: Vector3, how: str
 	}
 end
 
--- (2026-11-17) DEFENSIVE: the SLOWEST launch speed (from DiveReturnSpeeds, slow to fast) whose flight lands legally AND
--- peaks no higher than DiveReturnMaxApex above the table: a slow, high ball that buys recovery time without becoming a
--- moon ball (a fixed slow speed had to arc 25-50 studs high to carry the long table against drag). Each try is a bounded
--- solve; past DiveSolveBudget seconds the remaining (faster, cheaper) speeds are tried toward the table centre.
-function ShotLaunch.diveReturn(contact: Vector3, hitter: string?): DiveLaunch
-	local M = Config.Movement
+function ShotLaunch.emergencyLob(contact: Vector3, aim: number, topspin: number, sidespin: number, hitter: string?): SaveLaunch
+	local E = Config.Emergency
 	local cfg = TableWorld.physics
 	local who = hitter or "Player"
 	local opponent = if who == "Player" then "Bot" else "Player"
 	local c = TableWorld.center
 	local surfaceY = Config.Layout.SurfaceY
-	local deadline = os.clock() + M.DiveSolveBudget
-	local best: DiveLaunch? = nil
+	local deadline = os.clock() + E.SolveBudget
+	local best: SaveLaunch? = nil
 	local bestApex = math.huge
 	local pts: { Vector3 } = {}
-	for _, speed in M.DiveReturnSpeeds do
-		local lateral = if os.clock() > deadline then 0 else M.DiveReturnLateral
-		local x = math.clamp((contact.X - c.X) * lateral, -(TableWorld.halfWidth - 6), TableWorld.halfWidth - 6)
-		local aim = TableWorld.pointOnHalf(opponent, M.DiveReturnDepth, x)
-		local shot = ShotSolver.solve(cfg, contact, aim, {
+	for _, speed in E.Speeds do
+		local follow = if os.clock() > deadline then 0 else E.AimFollow
+		local x = math.clamp(ShotLaunch.aimLateral(aim, who) * follow, -(TableWorld.halfWidth - 6), TableWorld.halfWidth - 6)
+		local target = TableWorld.pointOnHalf(opponent, E.Depth, x)
+		local shot = ShotSolver.solve(cfg, contact, target, {
 			speed = speed,
-			topspin = M.DiveReturnTopspin,
-			sidespin = 0,
+			topspin = topspin,
+			sidespin = sidespin,
 			netZ = TableWorld.netZ,
 			netTopY = TableWorld.netTopY,
 			clearance = Config.Rally.NetClearance,
@@ -643,8 +657,8 @@ function ShotLaunch.diveReturn(contact: Vector3, hitter: string?): DiveLaunch
 				for _, p in pts do
 					apex = math.max(apex, p.Y - surfaceY)
 				end
-				local launch = launchOf(shot.velocity, shot.spin, aim, ("dive return (%.0f studs/s, apex %.1f)"):format(speed, apex), true, "ok")
-				if apex <= M.DiveReturnMaxApex then
+				local launch = launchOf(shot.velocity, shot.spin, target, ("emergency save (%.0f studs/s, apex %.1f)"):format(speed, apex), true, "ok")
+				if apex <= E.MaxApex then
 					return launch -- the slowest legal one under the height cap
 				end
 				if apex < bestApex then
@@ -656,57 +670,12 @@ function ShotLaunch.diveReturn(contact: Vector3, hitter: string?): DiveLaunch
 	if best then
 		return best -- legal, but every candidate peaked above the cap: the lowest of them
 	end
-	local aim = TableWorld.pointOnHalf(opponent, M.DiveReturnDepth, 0)
-	local d = aim - contact
-	local t = math.max(Vector3.new(d.X, 0, d.Z).Magnitude / M.DiveReturnSpeed, 0.2)
+	local target = TableWorld.pointOnHalf(opponent, E.Depth, 0)
+	local d = target - contact
+	local t = math.max(Vector3.new(d.X, 0, d.Z).Magnitude / E.Speeds[1], 0.2)
 	local v = Vector3.new(d.X / t, (d.Y + 0.5 * cfg.gravity * t * t) / t, d.Z / t)
-	return launchOf(v, Vector3.zero, aim, "dive return (fallback guess)", false, "fallback")
+	return launchOf(v, Vector3.zero, target, "emergency save (fallback guess)", false, "fallback")
 end
-
--- The deliberate MISHIT of a dive contact (the configurable failure share): a coherent physical miss of `kind` ("long":
--- over the opponent's end line, "wide": past a side line, "net": into the net), solved with the same physics so the
--- ball visibly flies there from the real contact. result = the predicted first contact ("out" / "net" / ...).
-function ShotLaunch.diveMishit(contact: Vector3, kind: string, sideSign: number, hitter: string?): DiveLaunch
-	local M = Config.Movement
-	local cfg = TableWorld.physics
-	local who = hitter or "Player"
-	local opponent = if who == "Player" then "Bot" else "Player"
-	local c = TableWorld.center
-	local toward = TableWorld.towardSide(opponent)
-	local target: Vector3, clearance: number? = c, nil
-	if kind == "net" then
-		target = Vector3.new(contact.X + (c.X - contact.X) * 0.5, TableWorld.netTopY - 1.0, TableWorld.netZ)
-		clearance = nil
-	elseif kind == "wide" then
-		local side = if sideSign >= 0 then 1 else -1
-		target = Vector3.new(c.X + side * (TableWorld.halfWidth + 5), TableWorld.landingY, c.Z + toward * TableWorld.halfLength * 0.55)
-		clearance = Config.Rally.NetClearance
-	else -- "long": an over-hit (faster: with air drag a 62 studs/s ball cannot carry past the far end line)
-		target = Vector3.new(contact.X + (c.X - contact.X) * 0.4, TableWorld.landingY, c.Z + toward * (TableWorld.halfLength + 4))
-		clearance = Config.Rally.NetClearance
-	end
-	local shot = ShotSolver.solve(cfg, contact, target, {
-		speed = if kind == "long" then M.DiveMishitLongSpeed else M.DiveMishitSpeed,
-		topspin = 0,
-		sidespin = 0,
-		netZ = TableWorld.netZ,
-		netTopY = if clearance then TableWorld.netTopY else nil,
-		clearance = clearance,
-		maxTime = 3,
-	})
-	local v = shot.velocity
-	if v.Magnitude == 0 then
-		local d = target - contact
-		local t = math.max(Vector3.new(d.X, 0, d.Z).Magnitude / M.DiveMishitSpeed, 0.2)
-		v = Vector3.new(d.X / t, (d.Y + 0.5 * cfg.gravity * t * t) / t, d.Z / t)
-	end
-	local path = ShotLaunch.predictPath(contact, v, Vector3.zero, nil, nil, who)
-	if path.kind == "ok" and kind ~= "wide" then
-		return ShotLaunch.diveMishit(contact, "wide", sideSign, hitter) -- (that mishit would have landed: play a wide one)
-	end
-	return launchOf(v, Vector3.zero, target, "dive mishit (" .. kind .. ")", path.kind ~= "ok", path.kind)
-end
-
 -- Simulate the launched ball through the real world (table, net, table body, floor) until its first contact.
 -- Appends sampled positions to `out` (cleared first; one every `every` ticks, plus the start and the end point) and
 -- returns what the first contact was. Used by the arrow and by tests; the server simulates the real ball itself.

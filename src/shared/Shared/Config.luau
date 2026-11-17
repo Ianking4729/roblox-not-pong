@@ -780,15 +780,31 @@ local Config = {
 		PaddleHandle = Color3.fromRGB(205, 160, 110),
 	},
 
-	-- Phase 3 player shot controls: PRE-AIM (mouse) -> LOCK (hold left button) -> DRAG FOR SPIN -> RELEASE TO SWING.
-	-- The client only REQUESTS a swing (target, drag, release time); the server re-derives and validates everything.
+	-- Player shot controls: CLICK-AND-FLICK (2026-11-17): PREPARE (cursor position: stroke, base aim, drive/arc) -> COMMIT
+	-- (hold left-click) -> FLICK (speed = power, direction = spin). Flick / Prep / Emergency below hold the new settings.
+	-- The client only REQUESTS a swing (flick time + raw measurements, the locked choices); the server re-derives and
+	-- validates everything.
 	ShotControl = {
 		Enabled = true,
-		-- timing (seconds)
+		-- timing (seconds): the CONTACT moment (flick start + Flick.ContactDelay) against the incoming ball's window
 		ContactWindowDuration = 0.25, -- clean-contact window centred on the moment the ball is closest to the paddle
-		EarlyReleaseTolerance = 0.1, -- beyond the clean window: this much earlier still gives a WEAK contact
-		LateReleaseTolerance = 0.1, -- ... and this much later
-		AutoReleaseAtWindowEnd = false, -- true: holding past the window swings automatically at its last moment
+		-- (2026-11-17 playtest value. MEASURED over 21 real rally windows from the server's own contact model: the valid
+		-- contact range is [max(window opens, ideal - 0.225), min(ball leaves reach, ideal + 0.225)] with the old 0.1 / 0.1.
+		-- The window OPENS (the bounced ball is falling and inside the reach) at ideal -0.16 s on average, i.e. inside the
+		-- early tolerance in 19 of 21 windows, so the EARLY side is gated by that opening, never by the tolerance (widening
+		-- it changes nothing); the ball LEAVES reach at ideal +0.25 s on average, which is before the old late limit in 9 of
+		-- 21 windows (fast balls). So the LATE tolerance is the only lever that helps, and only for balls that stay in
+		-- reach longer: mean valid range 0.372 s -> 0.412 s (+11%); more than that needs a change to the hitting range /
+		-- legal contact rule, which is held fixed. Was Late 0.1.)
+		-- (2026-11-17 Stage 1: that legal-contact rule is now RequireFallingBall below, OFF: the window opens as soon as the
+		-- bounced ball is inside the reach, rising or falling, so the early side is no longer gated by the ball's apex.)
+		-- LEGAL CONTACT: the ball must have bounced once on the player's half and be inside the reach (radius + height
+		-- band). true = ALSO falling (or already past the player's end line): the old rule, which removed ~0.2 s from the
+		-- front of the window. The emergency-save ring always keeps the falling rule (its rules are unchanged). The bot
+		-- (Striker) and the serve toss have their own rules and are not affected. Revert = set true.
+		RequireFallingBall = false,
+		EarlyReleaseTolerance = 0.1, -- beyond the clean window: a contact this much earlier is still WEAK (capped by the window opening)
+		LateReleaseTolerance = 0.22, -- ... and this much later (capped by the ball leaving reach)
 		-- reach (studs). Contact availability comes from the ball's simulated distance to this anchor, not a timer.
 		PaddleReach = 9, -- (overwritten at the end of this file: ArmReach + BladeContactRadius, 9.48 at BladeScale 1.3)
 		ArmReach = 7.4, -- studs: the reach without the blade (the previous total 9 minus its blade radius 1.6)
@@ -798,18 +814,9 @@ local Config = {
 		-- BACKHAND reach (confirmed 2026-11-15: reach follows the stroke locked at the press). The anchor is mirrored to
 		-- the player's LEFT; same radius and forward offset. The server uses the stroke recorded with the press.
 		BackhandAnchorRight = -4,
-		-- CHARGE -> CURVE -> RELEASE. Holding left-click charges POWER (hold time only); dragging the mouse while holding
-		-- sets SPIN (accumulated relative mouse movement). The cursor position never chooses where the ball goes.
-		-- power from hold time (the server measures the hold itself from the press/release times, see RallyService)
-		ChargeTime = .4, -- seconds of holding for full power (a normal rally gives ~0.7 s from the bot's hit to contact; press earlier to reach full)
-		ChargeExponent = 1, -- power = (hold / ChargeTime) ^ exponent. 1 = linear; >1 = slow start, fast finish
-		-- spin from the drag (pixels of mouse movement accumulated while holding; dragging back reduces / reverses it)
-		SpinSensitivity = 1, -- multiplies the drag distance
-		SpinDragPixels = 180, -- drag (pixels, at sensitivity 1) for full spin
-		SpinDeadzonePixels = 6, -- smaller drags give no spin
-		SpinCurveExponent = 1.1, -- >1 = finer control at small drags (was 1.4: a half drag gave only 38% spin, so medium curves were faint)
+		-- (hold-to-charge ChargeTime / ChargeExponent and the drag-spin Spin* / DragOvershootPixels settings were removed
+		-- on 2026-11-17: power and spin come from the flick, Config.Flick)
 		MaxSpin = 90, -- rad/s cap on the total spin (~19 rev/s; the bot plays 80)
-		DragOvershootPixels = 30, -- the accumulated drag is clamped this far past full spin, so reversing is quick
 		-- launch (Shared/ShotLaunch). Power sets the launch speed AND how deep a spin-free shot of that power would land;
 		-- the launch elevation is calibrated to that depth, then the full spin is applied and bends the real flight.
 		MinShotSpeed = 55, -- horizontal launch speed at zero charge, studs/s (x1.15 with the enlarged table; was 48)
@@ -876,13 +883,148 @@ local Config = {
 		-- (hysteresis, so the pose does not flicker when the cursor rests near the middle).
 		StrokeDeadZone = 0.03,
 		ShowDiagnostics = true, -- development-only debug bridges (Player.NotPongShotDebug / NotPongArrowDebug) used by Studio test scripts
-		ShowInputDebug = true, -- TEMPORARY on-screen overlay (top left) tracing the input pipeline: button, mouse events, drag, spin, meter, arrow. Set false once verified.
+		ShowInputDebug = true, -- TEMPORARY developer indicator (top left): rally input mode + PREPARING / SWING RECOGNIZED / RECOVERING / IGNORED / MISS reason. Set false to hide.
+		-- RALLY INPUT MODE (2026-11-17 input experiment; exactly ONE is active, serves are the same in both):
+		--   "ClickLock"  click-and-flick: hold left-click to lock stroke / aim / profile, flick while holding = the swing
+		--   "MouseOnly"  no button: the cursor prepares, a deliberate flick while the ball is coming = the swing, with the
+		--                preparation from just before the flick (Shared/MouseSwing; tunables Config.MouseOnlyRally)
+		-- Switch back = set "ClickLock". Ball speed, reach, contact timing, power / spin mapping and shot physics are the same.
+		RallyInput = "MouseOnly",
+	},
+
+	-- ===== CLICK-AND-FLICK SHOTS (2026-11-17; replaces hold-to-charge / drag / release-to-strike) =====================
+	-- PREPARE (cursor position) -> COMMIT (hold left-click) -> FLICK (a quick mouse flick while holding) = the swing.
+	-- Shared/FlickGesture recognises one coherent flick from timestamped relative mouse movement; Shared/ShotInput turns it
+	-- into power (flick speed) and spin (flick direction). Holding longer never adds power; releasing without a flick
+	-- cancels; one swing per click. The server recomputes power / spin from the raw gesture measurements (Flick limits).
+	--
+	-- Speeds and distances are in REFERENCE PIXELS: screen pixels x (ReferenceHeight / viewport height), so the same hand
+	-- movement means the same thing at any resolution. While committed the mouse is held in place
+	-- (MouseBehavior.LockCurrentPosition): the cursor does not drift, screen edges never stop a flick, and preparation is
+	-- untouched; the relative movement comes from InputObject.Delta.
+	--
+	-- WHY THESE INITIAL VALUES (to be tuned with a real mouse): ordinary aiming / resting hand movement is slow and short
+	-- (measured guides: a few px per frame, under ~600 ref px/s, and it wanders), while a deliberate flick moves ~40-300 ref
+	-- px in 30-80 ms in one direction (~1500-6000 ref px/s). A flick STARTS when, within the last OnsetWindow seconds, the
+	-- movement adds up to at least OnsetDistance px, its average speed (displacement / elapsed time, not per frame) is at
+	-- least OnsetSpeed, and it is coherent (|sum of moves| / path length >= Coherence: jitter back and forth cancels out).
+	-- Movements under JitterPixels per event are ignored for the onset. The flick's SEGMENT then runs from the first
+	-- moving sample of that window until the movement slows below SegmentEndFraction of its peak speed, turns more than
+	-- SegmentMaxTurnDeg, pauses for SegmentGap, or SegmentMax seconds pass: its average speed = power, its direction = spin.
+	-- So the swing is finalised at most OnsetWindow + SegmentMax after the hand started moving (processing delay, bounded);
+	-- the CONTACT TIME is the flick's start + ContactDelay (the paddle travelling to the ball), on client and server alike.
+	Flick = {
+		ReferenceHeight = 1080, -- px: thresholds are defined at this viewport height
+		JitterPixels = 1.5, -- ref px per input event: smaller moves never start a flick
+		OnsetWindow = 0.05, -- s: sliding window tested for a flick start
+		OnsetDistance = 36, -- ref px of net movement inside the window
+		OnsetSpeed = 1100, -- ref px/s average speed inside the window
+		Coherence = 0.8, -- net displacement / path length inside the window (1 = perfectly straight)
+		SegmentMax = 0.06, -- s after the start was detected: the measurement ends at the latest here
+		SegmentEndFraction = 0.35, -- ... or when a frame's speed falls below this fraction of the segment's peak
+		SegmentMaxTurnDeg = 60, -- ... or a frame's movement turns this far from the segment's direction
+		SegmentGap = 0.03, -- ... or no movement for this long
+		MinElapsed = 1 / 240, -- s: elapsed-time floor for one sample (no division by ~0 at high event rates)
+		MaxSpeed = 20000, -- ref px/s: faster = an invalid sample (rejected, never clamped into a shot)
+		-- power from the segment's average speed
+		MinPower = 0.15, -- power of a flick right at OnsetSpeed
+		FullPowerSpeed = 5000, -- ref px/s for full power
+		PowerExponent = 1, -- 1 = linear between OnsetSpeed and FullPowerSpeed
+		-- spin from the flick's direction (screen: up = topspin, down = backspin, right = curve to the screen-right, left =
+		-- curve left; diagonals split). Strength grows with the flick's power from SpinAtMinPower to SpinAtFullPower rad/s.
+		SpinAtMinPower = 25,
+		SpinAtFullPower = 90, -- (= ShotControl.MaxSpin)
+		ContactDelay = 0.07, -- s from the flick's start to the paddle meeting the ball (the same as Serve.HitDelay)
+		-- the server accepts a flick timestamp this much older than its arrival on top of MaxLatencyCompensation
+		-- (the recognition interval: OnsetWindow + SegmentMax)
+		RecognitionAllowance = 0.11,
+	},
+
+	-- MOUSE-ONLY RALLY PROTOTYPE (ShotControl.RallyInput = "MouseOnly"; Shared/MouseSwing + Client/ShotController).
+	-- The flick is measured with the same Config.Flick thresholds as click-to-lock; these only separate a flick from
+	-- moving the paddle into position, and say when a flick may count as a swing.
+	MouseOnlyRally = {
+		-- WHEN: a flick counts only if its contact moment (flick start + Flick.ContactDelay) falls in the ATTEMPT ZONE around
+		-- the incoming ball's best contact moment (the window's ideal; the earlier pass's ideal for a high bounce; for a
+		-- ball out of every reach, its closest approach within NearReach). Outside it every movement is preparation.
+		-- The zone is wider than the valid window (ideal -0.225 .. +0.345 s) so early / late attempts still MISS.
+		AttemptLead = 0.5, -- s before the ideal moment
+		AttemptTrail = 0.45, -- s after it
+		NearReach = 20, -- studs: "is the ball coming near me at all" for out-of-reach attempts (zone only, never reach)
+		-- WHAT: short vs sustained (MouseSwing rule 2)
+		SweepCheck = 0.03, -- s after a measurement that ran out of time while still moving
+		SweepFraction = 0.5, -- keeps moving the same way at >= this fraction of the flick's speed -> a sweep (reposition)
+		MaxFlickDistance = 400, -- ref px: a movement longer than this is a reposition however it ends (flicks: ~40-300)
+		-- settling after a sweep / flick / warp (MouseSwing rule 3)
+		QuietGap = 0.04, -- s without movement
+		QuietSpeed = 700, -- ref px/s: or a movement event slower than this
+		QuietTurnDeg = 60, -- or a turn of more than this from the previous movement
+		WarpPixels = 400, -- ref px in ONE movement event = a cursor warp / reset, never movement
+		PrepHistory = 0.5, -- s of preparation kept to snapshot the one from just before the flick
+	},
+
+	-- PREPARATION (cursor position, before committing). Screen fractions from UserInputService:GetMouseLocation() over
+	-- Camera.ViewportSize (both include the top-bar inset area, so the two agree; recomputed every frame, so a resized
+	-- window is handled). Horizontal: left of the dead zone = backhand, right = forehand (StrokeDeadZone keeps the current
+	-- stroke near the middle), and the base aim across the opponent's half (-1 = their left as you see it .. +1 = right).
+	-- Vertical: higher on the screen = a higher arc, lower = a low drive. Locked at the click.
+	Prep = {
+		AimHalfSpan = 0.42, -- screen fraction from the centre to full aim (-1 / +1)
+		AimMaxX = 1, -- |aim| cap
+		ProfileTop = 0.25, -- screen Y fraction (0 = top) giving profile 1 (highest arc) ...
+		ProfileBottom = 0.85, -- ... and profile 0 (lowest drive); clamped outside
+		-- the base aim on the opponent's half: aim -1..1 -> lateral target up to AimLateral of the half-width (minus
+		-- ShotControl.LateralMargin); the profile sets the launch speed factor and depth
+		AimLateral = 1,
+		DriveSpeedFactor = 1.0, -- profile 0: launch speed x this (a flat, fast drive)
+		ArcSpeedFactor = 0.72, -- profile 1: launch speed x this (slower = a higher arc for the same landing)
+		DriveDepthBonus = 0, -- profile 0: + this to the landing depth (0..1 of the half)
+		ArcDepthBonus = 0.08, -- profile 1: lands a little deeper
+		ArcClearance = 3.5, -- profile 1: net clearance (studs) the calibration asks for; profile 0 uses Rally.NetClearance
+	},
+
+	-- EMERGENCY SAVE (2026-11-17; replaces the F dive and its automatic return). Two reach zones around the stroke's anchor:
+	-- the normal reach (ShotControl.PaddleReach) and an OUTER ring up to PaddleReach + ReachExtra. A ball whose path never
+	-- enters the normal reach but passes through the ring can be SAVED: you still move yourself, hold left-click and time
+	-- the flick (the same timing rules, against the ring's own contact window). A successful save is a slow, high
+	-- defensive lob (power and spin capped: a fast flick never makes it an attack). The body and paddle reach toward the
+	-- contact (animation only: the root is never moved), land, then a StandUpTime get-up during which your WalkSpeed is
+	-- x RecoverySpeedFactor; preparing, flicking and hitting stay available; no cooldown, no stamina cost, no random roll.
+	Emergency = {
+		Enabled = true,
+		ReachExtra = 4.5, -- studs beyond PaddleReach
+		LandDelay = 0.25, -- s from the contact to landing (the reach animation's lunge)
+		StandUpTime = 0.5, -- s get-up after landing
+		RecoverySpeedFactor = 0.8, -- WalkSpeed multiplier during the get-up
+		-- the flick's POWER plays no part in a save (the lob's own slow speeds below decide its pace: never an attack)
+		SpinFactor = 0.3, -- the flick's spin x this ...
+		MaxSpin = 20, -- ... capped at this (rad/s)
+		-- the lob: the slowest of Speeds (studs/s, horizontal) that lands legally and peaks at most MaxApex above the table
+		Speeds = { 46, 52, 58, 64, 72, 80 },
+		MaxApex = 18,
+		Depth = 0.7, -- landing depth on the opponent's half
+		AimFollow = 0.5, -- the landing follows the locked base aim by this fraction (safe, not a placement winner)
+		SolveBudget = 0.015,
+	},
+
+	-- RALLY TELEMETRY (2026-11-17, diagnosis only; changes no gameplay). Client/Telemetry logs every incoming ball and
+	-- every attempt (no gesture, committed-but-no-flick with how close the hand came to a flick, early, late, out of
+	-- reach, contact and where the shot was predicted to land); RallyService logs its verdicts, the falling-ball rule's
+	-- effect, missed incoming balls and point endings. Lines start with "[Tel]" in the Output window; a summary prints
+	-- every SummaryEvery attempts and on request (Player.NotPongTelemetry:Invoke("summary")).
+	Telemetry = {
+		Enabled = true,
+		Print = true, -- one Output line per attempt / ball / point
+		SummaryEvery = 10,
 	},
 
 	-- CHARGE SLOW MOTION (server-authoritative; Server/RallyService + Client/ShotController). When the incoming ball is
 	-- close to contact, the ball, bot and player move at TimeScale while you charge and curve.
+	-- (2026-11-17) OFF for rallies: its trigger (pressing to charge near contact) no longer exists with click-and-flick;
+	-- you chose to leave rally slow motion off until a new trigger is decided. The slow-motion plumbing (time scale,
+	-- bot/player slowing, client tint) is kept; nothing starts it.
 	ChargeFreeze = {
-		Enabled = true,
+		Enabled = false,
 		-- Match modes that may use it. Solo (vs the bot) only: slow motion must not affect another human's game.
 		Modes = { Solo = true, PvP = false },
 		-- seconds before ideal contact when a press can start slow motion. Must be <= MaxDuration * TimeScale (0.14 s) or
@@ -922,52 +1064,8 @@ local Config = {
 		-- Optional jump cap (studs). nil = leave the Roblox jump alone. Not needed to keep players off the table
 		-- (TableGuard does that); set a number only if you want lower jumps.
 		MaxJumpHeight = nil :: number?,
-		-- DIVE (F; backward dives, 1.3 s recovery; 2026-11-16 pass 3: AUTOMATIC return, see DiveReturn* below). Server-owned:
-		-- the client only sends "dive" + a direction; MovementService validates stamina/cooldown/state and drives the lunge
-		-- with a server-created LinearVelocity (no teleport; the table guard still blocks it). No charge, drag or release:
-		-- RallyService attempts the return itself during the dive's contact window.
-		-- Direction (relative to the court-facing direction, i.e. the avatar's facing; WASD is camera-relative and the camera
-		-- is behind the player): holding S (alone or with A/D) = a BACKWARD dive along the held direction (back diagonals keep
-		-- their sideways component and play the backward animation); A/D = a dive to that side; no keys (or W alone) = toward
-		-- the locked stroke's side. ShotInput.diveKind classifies it the same way on every machine.
-		DiveEnabled = true,
-		DiveKey = Enum.KeyCode.F, -- (was E; E is no longer bound)
-		DiveStaminaCost = 50,
-		DiveDuration = 0.35, -- seconds of lunge
-		DiveDistance = 10, -- studs covered by the lunge (speed = distance / duration, independent of Shift boost)
-		DiveRecovery = 1.3, -- seconds after the lunge with no walking, no jumping, no new charge (was 1.0)
-		DiveCooldown = 1.5, -- seconds from one dive's start to the next (shorter than a whole dive, so in practice a dive
-		-- can only start once the previous one, including its recovery, is over)
-		DiveBackwardThreshold = 0.35, -- a direction whose backward share (dot with -facing) is at least this is a backward dive
-		-- DIVE CONTACT WINDOW: from the dive's start until DiveContactWindow seconds (the lunge + the landing), the reach
-		-- anchor moves DiveAnchorAhead studs along the dive direction from wherever the server sees the root, and the radius
-		-- grows by DiveReachBonus. After that (the get-up) no contact is possible.
-		DiveContactWindow = 0.45,
-		DiveReachBonus = 5,
-		DiveAnchorAhead = 3,
-		-- AUTOMATIC DIVE RETURN (2026-11-16 pass 3: supersedes the manual dive contact above). Pressing F commits: any
-		-- charge is cancelled and no manual swing can follow at that ball. During the contact window, the FIRST physics tick
-		-- at which the incoming ball is legally playable (bounced once on the player's half, the player's turn) and inside
-		-- the dive-extended reach (the anchor DiveAnchorAhead along the dive, radius PaddleReach + DiveReachBonus; never under
-		-- the table) is the contact. The outcome is rolled ONCE there on the server: DiveReturnChance -> a defensive return
-		-- solved to land legally (DiveReturnSpeed, a little topspin, DiveReturnDepth toward the middle); otherwise a
-		-- coherent physical mishit (long / wide / net). One contact per dive and per incoming ball.
-		DiveReturnChance = 0.9,
-		-- DEFENSIVE (2026-11-17): a slower, higher ball that buys recovery time and gives the opponent a chance to attack
-		-- (was 60 studs/s with topspin 25: a flat, firm return). The SLOWEST of DiveReturnSpeeds (horizontal studs/s,
-		-- tried slow to fast) that lands legally and peaks at most DiveReturnMaxApex above the table is used. Measured:
-		-- one fixed 46 studs/s speed had to arc 25-50 studs high to carry the long table against drag (moon balls) and
-		-- cost up to 0.68 s to solve; never pick a speed list whose fastest entry cannot carry from a deep, wide contact.
-		DiveReturnSpeed = 46, -- (the slowest speed; kept for the fallback guess)
-		DiveReturnSpeeds = { 46, 52, 58, 64, 72, 80 },
-		DiveReturnMaxApex = 18, -- studs above the table (the rally camera sits ~21 above it; a smash needs >= 7.5)
-		DiveReturnTopspin = 5, -- rad/s (almost flat: it floats)
-		DiveReturnDepth = 0.7, -- landing depth on the opponent's half (0 = net, 1 = end line): deep, so it is not a winner
-		DiveReturnLateral = 0.2, -- the landing follows the contact's sideways offset by this fraction
-		DiveSolveBudget = 0.015, -- seconds; past it the remaining (faster) speeds aim at the centre
-		DiveMishitSpeed = 62,
-		DiveMishitLongSpeed = 100, -- (measured: with drag, 62 studs/s cannot carry past the far end line)
-		DiveMishitKinds = { "long", "wide", "net" },
+		-- (The F dive, its lunge, 1.3 s recovery, stamina cost and AUTOMATIC return were retired on 2026-11-17: the
+		-- EMERGENCY SAVE in the click-and-flick shot replaces them, Config.Emergency.)
 	},
 
 	-- ON / OFF THE PLATFORM (client presentation, Client/PlatformZone). Off the platform the game hands the player back to
@@ -1034,13 +1132,50 @@ local Config = {
 		},
 	},
 
-	-- Dive + get-up animation (client, visual; 2026-11-15 replaced the procedural lean with the /animate clips
-	-- NP_DiveRight / NP_DiveLeft: push-off, airborne reach, floor landing in the 0.35 s lunge, then a 1.0 s get-up
-	-- (brace, kneel, rise) that ends in the ready stance). Action4: nothing standing shows through while on the floor.
-	DivePose = {
-		BlendIn = 0.06, -- seconds to blend from the current pose into the push-off
-		BlendOut = 0.18, -- seconds over which the clip's last frames blend into the live ready stance
+	-- PADDLE ARM LAYER (click-and-flick, 2026-11-17; StancePose + Shared/PaddleArm; client, visual only). The local
+	-- player's paddle arm (shoulder, elbow, wrist) follows the shot controller: the PREPARED pose from the cursor
+	-- (PaddleArm's solved grid, blended), then on a flick a stroke to the CONTACT pose (solved per swing so the blade
+	-- meets the predicted ball, timed to the contact moment), a follow-through, and back to preparation. It is written
+	-- after the Animator each frame, over the stance track's arm only: legs / footwork, hips, root and facing are never
+	-- touched. Your serve's hold / toss / strike clips own the arm, so the layer fades out during your serve; the
+	-- emergency save's body clip leaves the paddle arm to this layer (the arm reaches for the ball over the lunge).
+	ArmLayer = {
+		Enabled = true,
+		BlendRate = 12, -- 1/s: the layer's weight in / out
+		PrepSmoothing = 18, -- 1/s: the pose eases toward the cursor's prepared pose (no snaps when the cursor jumps)
+		MinStrikeTime = 0.06, -- s: the quickest stroke from preparation to contact (a flick recognised late)
+		FollowTime = 0.16, -- s: contact -> follow-through
+		-- WIND-UP at a credible flick ONSET (before the flick is finalised; reversible: an ignored candidate eases back):
+		-- extra joint angles (same layout as Follow), reached in WindupTime, dropped after WindupMax without a swing
+		Windup = {
+			Enabled = true,
+			Time = 0.05,
+			Max = 0.25,
+			Forehand = { -9, -2, 10, 7, 0, 0, 0, 0 }, -- back and open (about -0.4 x the follow-through)
+			Backhand = { -5, 15, 0, 8, 0, 0, 0, 0 },
+		},
+		ReturnTime = 0.3, -- s: follow-through -> preparation
+		-- extra joint angles at the follow-through ({ shoulder x, y, z, elbow x, y, wrist x, y, z }, degrees)
+		Follow = {
+			Forehand = { 22, 6, -26, -18, 0, 0, 0, 0 }, -- up and across the body
+			Backhand = { 12, -38, 0, -20, 0, 0, 0, 0 }, -- out to the right
+		},
+		FaceOffset = 0.95, -- studs: blade centre behind the ball along the striking face (ball radius + half the paddle)
+		MissReach = 3, -- studs: a swing with no ball goes this far forward from the prepared blade
+		-- contact solve (Shared/PaddleArm.solveContact)
+		SolveIterations = 28, -- (measured ~8 ms at 40 passes, once per swing; fewer passes trade a little accuracy for time)
+		SolveStep = 14, -- degrees, halved when stuck (stops below 0.5)
+		FaceWeight = 6, -- striking face along the outgoing direction
+		StayWeight = 0.0004, -- stay near the prepared pose (no wild solutions)
+		ClearanceWeight = 10, -- no blade / hand / forearm through the torso, head, upper arm or table top
+		-- UPPER-BODY SUPPORT for far contacts: an extra waist rotation (lean x, twist y, side bend z) on top of the stance,
+		-- used only when the arm alone cannot reach (it costs WaistWeight per degree squared); capped at WaistLimit.
+		WaistWeight = 0.004,
+		WaistLimit = Vector3.new(18, 40, 22), -- degrees: lean, twist, side bend
 	},
+
+	-- (DivePose, the F dive's clip blending, was retired on 2026-11-17 with the F dive; the emergency save's body clip
+	-- NP_SaveRight / NP_SaveLeft is played by the stance controller, see StancePose controller:playSave.)
 
 	-- Client-side visual feedback (never authoritative). Colours are cosmetic and independent of gameplay.
 	Feedback = {
@@ -1068,7 +1203,37 @@ local Config = {
 			RiskyColor = Color3.fromRGB(255, 190, 70),
 			EndRingRadius = 1.5, -- studs: highlight on the predicted landing spot
 		},
-		-- Power / curve meter (bottom right): Power fills with hold time ONLY; Curve shows the spin strength.
+		-- CONTACT RING (Client/ContactRing; replaced the accuracy bar, 2026-11-17): a hollow ring round the incoming ball;
+		-- its arc (clockwise from 12 o'clock) completes and turns green while a flick right now would register.
+		ContactRing = {
+			Segments = 72, -- bars the arc is drawn with
+			Thickness = 4, -- px, the arc
+			TrackThickness = 2, -- px, the faint full circle
+			TrackTransparency = 0.78,
+			ArcTransparency = 0.05,
+			FarRadius = 78, -- px, the ring's radius when far (it tightens toward the ball, never below ball radius + NearGap)
+			NearGap = 9, -- px between the ball's edge and the ring when tight
+			LeadTime = 0.9, -- s before a flick becomes valid at which the arc starts to grow
+			BeforeValidMax = 0.97, -- the arc never reads as complete until contact is actually possible
+			ApproachStuds = 40, -- with no reachable window: the arc follows the distance to the contact area over this span ...
+			UnreachableMax = 0.8, -- ... and never goes past this fraction (never complete, never green)
+			Smoothing = 16, -- 1/s on the approach only (the green signal is never smoothed)
+			FadeTime = 0.18, -- s to fade out after the opportunity (the arc is not unwound)
+			ArcColor = Color3.fromRGB(235, 240, 255),
+			TrackColor = Color3.fromRGB(235, 240, 255),
+			GreenColor = Color3.fromRGB(90, 235, 120),
+		},
+		-- Aim marker (click-and-flick): the BASE aim on the opponent's half while preparing (cursor) and committed (locked):
+		-- a ring where the base aim points and a post whose height shows the drive (PostMin) .. arc (PostMax) profile.
+		AimMarker = {
+			RingRadius = 1.6,
+			PostMin = 0.6, -- studs: profile 0 (low drive)
+			PostMax = 5, -- studs: profile 1 (high arc)
+			Color = Color3.fromRGB(235, 235, 245), -- following the cursor
+			LockedColor = Color3.fromRGB(200, 110, 255), -- locked at the click
+		},
+		-- Power / curve meter (bottom right): shown after a flick only: Power = what the flick's speed gave; Curve = the
+		-- spin strength. (Holding the button never fills anything.)
 		PowerMeter = {
 			Width = 220,
 			Segments = 5,
@@ -1093,6 +1258,7 @@ local Config = {
 			CleanColor = Color3.fromRGB(90, 230, 120),
 			WeakColor = Color3.fromRGB(255, 205, 70),
 			MissColor = Color3.fromRGB(255, 80, 80),
+			SaveColor = Color3.fromRGB(255, 150, 60), -- the emergency-save window and verdict
 			ResultShowTime = 0.9,
 		},
 		-- Ball trail (follows the rendered ball; drawn from its real position every frame, so it shows the real curve).

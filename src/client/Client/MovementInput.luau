@@ -2,33 +2,19 @@
 -- (Server/MovementService) validates it and sets the real WalkSpeed, so the client cannot pick its own speed.
 --
 -- Shift is bound at high priority and SUNK so Roblox's default Shift Lock toggle (LeftShift) never fires. It does not
--- touch the mouse, so aiming, dragging and releasing shots are unaffected. The request is cancelled whenever Shift
+-- touch the mouse, so preparing, committing and flicking shots are unaffected. The request is cancelled whenever Shift
 -- is released, the window loses focus, or the character respawns (the server also resets the boost on respawn).
 
---
--- DIVE (Config.Movement.DiveKey, F): sends a dive REQUEST with a direction: the movement input (Humanoid.MoveDirection,
--- i.e. WASD relative to the camera, which sits behind the player facing the table) or, with no keys held (or W alone),
--- toward the current stroke's side (backhand = left, forehand = right). S (alone or with A/D) dives BACKWARD along the
--- held direction. The server validates everything (stamina, cooldown, live rally, one per ball, not while serving) and
--- moves the body; this module only plays the matching dive (ShotInput.diveKind: Right / Left / Back) when the server
--- confirms it, and flashes NO STAMINA when it refuses for stamina. A dive never hits: the swing does (ShotController).
+-- (The F dive was retired on 2026-11-17: the EMERGENCY SAVE, Config.Emergency, is part of the click-and-flick shot.)
 
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
-local StancePose = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("StancePose"))
-local ShotInput = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("ShotInput"))
 
 local MovementInput = {}
 local M = Config.Movement
-
-local strokeGetter: (() -> string)? = nil
--- ShotController owns the stroke; Main wires it here (used for a dive with no movement keys held).
-function MovementInput.setStrokeGetter(fn: () -> string)
-	strokeGetter = fn
-end
 
 local function createStaminaHud(player: Player)
 	local playerGui = player:WaitForChild("PlayerGui")
@@ -103,20 +89,6 @@ local function createStaminaHud(player: Player)
 	amount.ZIndex = 2
 	amount.Parent = track
 
-	-- Dive cost marker on the bar (stamina needed for one dive)
-	if M.DiveEnabled then
-		local mark = Instance.new("Frame")
-		mark.Name = "DiveCost"
-		mark.AnchorPoint = Vector2.new(0.5, 0.5)
-		mark.Position = UDim2.fromScale(math.clamp(M.DiveStaminaCost / M.MaxStamina, 0, 1), 0.5)
-		mark.Size = UDim2.new(0, 2, 1, 4)
-		mark.BackgroundColor3 = Color3.new(1, 1, 1)
-		mark.BackgroundTransparency = 0.35
-		mark.BorderSizePixel = 0
-		mark.ZIndex = 3
-		mark.Parent = track
-	end
-
 	local flashUntil = 0
 	local function update()
 		local current = player:GetAttribute(Config.Names.BoostStaminaAttribute)
@@ -137,47 +109,7 @@ local function createStaminaHud(player: Player)
 
 	player:GetAttributeChangedSignal(Config.Names.BoostStaminaAttribute):Connect(update)
 	player:GetAttributeChangedSignal(Config.Names.BoostExhaustedAttribute):Connect(update)
-	player:GetAttributeChangedSignal(Config.Names.DiveRefusedAttribute):Connect(function()
-		flashUntil = os.clock() + 0.8
-		update()
-		task.delay(0.85, update)
-	end)
 	update()
-end
-
--- Plays the dive + get-up when the server confirms a dive on `character`, following the server's phases: "lunge"
--- starts the clip, "recover" re-syncs it to the get-up, "" (dive over) lets it finish or blends it out if cut short.
--- Jumping is disabled for the whole dive (the body must not leave the floor pose). Visual only.
-local function watchDivePose(character: Model)
-	local handle: StancePose.DiveHandle? = nil
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	character:GetAttributeChangedSignal(Config.Names.DiveStateAttribute):Connect(function()
-		local phase = character:GetAttribute(Config.Names.DiveStateAttribute) or ""
-		if phase == "lunge" then
-			local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-			local dir = character:GetAttribute(Config.Names.DiveDirAttribute)
-			local side = "Right"
-			if root and typeof(dir) == "Vector3" then
-				side = ShotInput.diveKind(dir, root.CFrame)
-			end
-			if humanoid then
-				humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
-			end
-			handle = StancePose.dive(character, side)
-		elseif phase == "recover" then
-			if handle then
-				handle:recover()
-			end
-		else
-			if humanoid then
-				humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
-			end
-			if handle then
-				handle:finish()
-				handle = nil
-			end
-		end
-	end)
 end
 
 function MovementInput.start(player: Player)
@@ -188,38 +120,6 @@ function MovementInput.start(player: Player)
 	local remotesFolder = ReplicatedStorage:WaitForChild(Config.Names.Remotes)
 	local boostRemote = remotesFolder:WaitForChild("BoostRequest") :: RemoteEvent
 
-	if M.DiveEnabled then
-		local diveRemote = remotesFolder:WaitForChild("DiveRequest") :: RemoteEvent
-		ContextActionService:BindActionAtPriority("NotPongDive", function(_, inputState)
-			if inputState ~= Enum.UserInputState.Begin then
-				return Enum.ContextActionResult.Pass
-			end
-			local character = player.Character
-			local hum = character and character:FindFirstChildOfClass("Humanoid")
-			local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
-			if not hum or not root then
-				return Enum.ContextActionResult.Pass
-			end
-			local move = Vector3.new(hum.MoveDirection.X, 0, hum.MoveDirection.Z)
-			local right = Vector3.new(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z).Unit
-			local look = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z).Unit
-			local dir
-			-- W alone (toward the table, no sideways input) is not a dive direction: like no input, the stroke's side
-			local forwardOnly = move.Magnitude > 0.1 and math.abs(move.Unit:Dot(right)) < 0.3 and move.Unit:Dot(look) > 0
-			if move.Magnitude > 0.1 and not forwardOnly then
-				dir = move.Unit
-			else
-				local stroke = if strokeGetter then strokeGetter() else "Forehand"
-				dir = if stroke == "Backhand" then -right else right
-			end
-			diveRemote:FireServer(dir)
-			return Enum.ContextActionResult.Sink
-		end, false, Enum.ContextActionPriority.High.Value, M.DiveKey)
-		if player.Character then
-			watchDivePose(player.Character)
-		end
-		player.CharacterAdded:Connect(watchDivePose)
-	end
 	local held = false
 
 	local function set(value: boolean)
