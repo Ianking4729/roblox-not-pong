@@ -25,6 +25,10 @@ local function log(...)
 	end
 end
 
+-- Animation retargeting off (Config.Animation): our avatars are scaled with Model:ScaleTo, and retargeting scaled the
+-- default animations' hip motion a second time (the shaky walk). The bot animates here; each client sets it too.
+workspace.Retargeting = Config.Animation.Retargeting
+
 CollisionSetup.setup()
 local arena = ArenaBuilder.load() -- finds the static arena saved in the place; only the ball is created here
 TableGuard.build(arena.Folder) -- invisible block on the table footprint: characters cannot climb onto the table

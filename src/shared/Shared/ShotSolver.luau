@@ -27,6 +27,11 @@ export type Options = {
 	edgeZ: number?, -- optional: the hitter's own end line; a ball struck below table height must clear it too
 	edgeTopY: number?, -- table-top height at that edge
 	maxTime: number?,
+	-- cost bounds (2026-11-17, serves): inner iterations per speed (default 24), slower-speed retries (default 8) and the
+	-- landing tolerance in studs (default 0.05). The serve solve does not need 0.05-stud precision on its first bounce.
+	maxIterations: number?,
+	maxFactors: number?,
+	tolerance: number?,
 }
 
 -- Spin vector for a ball travelling horizontally along `dir`: topspin is about (up x dir), sidespin about up.
@@ -95,7 +100,8 @@ function ShotSolver.solve(config: BallPhysics.Config, start: Vector3, target: Ve
 	local dirBase = flatD.Unit
 	local perp = rotY(dirBase, math.pi / 2)
 	local factor = 1
-	for _ = 1, 8 do
+	local tol = opts.tolerance or 0.05
+	for _ = 1, opts.maxFactors or 8 do
 		local h = opts.speed * factor
 		local t = dist / h
 		local vy = (target.Y - start.Y + 0.5 * g * t * t) / t
@@ -105,7 +111,7 @@ function ShotSolver.solve(config: BallPhysics.Config, start: Vector3, target: Ve
 		local converged = false
 		local land: Vector3?, tl: number, yNet: number?, yEdge: number? = nil, 0, nil, nil
 		local v, w = Vector3.zero, Vector3.zero
-		for _ = 1, 24 do
+		for _ = 1, opts.maxIterations or 24 do
 			local dir = rotY(dirBase, yaw)
 			v = dir * h + Vector3.yAxis * vy
 			w = ShotSolver.spinVector(dir, opts.topspin, opts.sidespin)
@@ -117,7 +123,7 @@ function ShotSolver.solve(config: BallPhysics.Config, start: Vector3, target: Ve
 			end
 			local delta = Vector3.new(land.X - target.X, 0, land.Z - target.Z)
 			local rangeErr, latErr = delta:Dot(dirBase), delta:Dot(perp)
-			if math.abs(rangeErr) < 0.05 and math.abs(latErr) < 0.05 then
+			if math.abs(rangeErr) < tol and math.abs(latErr) < tol then
 				converged = true
 				break
 			end
@@ -206,6 +212,12 @@ export type ServeOptions = {
 	receiver: string,
 	secondDepth: number, -- desired second-bounce distance past the net, in studs
 	netZ: number,
+	maxTime: number?, -- flight horizon of each inner solve (seconds; default 4). Serves reach their first bounce fast:
+	-- a short horizon bounds the cost of attempts that never land (2026-11-16: 4 s made rare serves cost ~0.4 s)
+	maxIterations: number?, -- passed to each inner solve (see Options)
+	maxFactors: number?,
+	tolerance: number?,
+	maxSteps: number?, -- bisection steps (default 12)
 }
 
 -- Serve: the first bounce must be on `firstBounce` (server's half), the second on the receiver's half, without
@@ -223,8 +235,16 @@ function ShotSolver.solveServe(
 	local bestSecond: Vector3? = nil
 	local bestErr = math.huge
 	local towardReceiver = if opts.receiver == "Player" then 1 else -1
-	for _ = 1, 12 do
-		local shot = ShotSolver.solve(config, start, firstBounce, { speed = h, topspin = opts.topspin, sidespin = opts.sidespin })
+	for _ = 1, opts.maxSteps or 12 do
+		local shot = ShotSolver.solve(config, start, firstBounce, {
+			speed = h,
+			topspin = opts.topspin,
+			sidespin = opts.sidespin,
+			maxTime = opts.maxTime,
+			maxIterations = opts.maxIterations,
+			maxFactors = opts.maxFactors,
+			tolerance = opts.tolerance,
+		})
 		local second: Vector3? = nil
 		local valid = false
 		local short = true

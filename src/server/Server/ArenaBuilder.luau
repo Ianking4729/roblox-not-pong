@@ -87,7 +87,18 @@ end
 
 -- STATIC GEOMETRY ---------------------------------------------------------------------------------------
 
-function ArenaBuilder.syncGeometry(existing: Folder?): Folder
+-- The uploaded table model (Table/Visual/TableAsset), or nil when the arena still uses the primitive placeholder visuals.
+function ArenaBuilder.tableAsset(arena: Instance?): Model?
+	local folder = arena or Workspace:FindFirstChild(Config.Names.Arena)
+	local t = folder and folder:FindFirstChild("Table")
+	local v = t and t:FindFirstChild("Visual")
+	local asset = v and v:FindFirstChild(Config.Names.TableAsset)
+	return if asset and asset:IsA("Model") then asset else nil
+end
+
+-- `gameplayOnly` (used at Play when the saved arena is out of date): only the gameplay parts (collision table block, net
+-- collision, platform, ball sizes) are corrected; visual parts, the table asset and the spawn markers are not touched.
+function ArenaBuilder.syncGeometry(existing: Folder?, gameplayOnly: boolean?): Folder
 	local T, N, L, P, C = Config.Table, Config.Net, Config.Layout, Config.Platform, Config.Colors
 	local G = Config.CollisionGroups
 	local origin = Config.Arena.Origin
@@ -107,6 +118,10 @@ function ArenaBuilder.syncGeometry(existing: Folder?): Folder
 	local tableModel = ensure(arena, "Model", "Table") :: Model
 	local collisionFolder = ensure(tableModel, "Folder", "Collision")
 	local visualFolder = ensure(tableModel, "Folder", "Visual")
+	-- With an uploaded table asset, the asset IS the visual table (fitted by fitTableAsset); the primitive placeholder
+	-- visuals are neither created nor updated, and the net parts below are collision only (invisible).
+	local hasAsset = ArenaBuilder.tableAsset(arena) ~= nil
+	local buildVisuals = not gameplayOnly and not hasAsset
 
 	-- Gameplay: one invisible block from the floor to the playing surface (also stops avatars walking under it).
 	local top, topNew = part(collisionFolder, "TableTop")
@@ -120,6 +135,7 @@ function ArenaBuilder.syncGeometry(existing: Folder?): Folder
 	cosmetic(top, topNew, { Transparency = 1 })
 	top.CanQuery = false
 
+	if buildVisuals then
 	local surface, surfaceNew = part(visualFolder, "TableSurface")
 	setGeometry(surface, Vector3.new(T.Width, T.TopThickness, T.Length), CFrame.new(L.TableTopCenter), false, G.Table)
 	cosmetic(surface, surfaceNew, {})
@@ -158,14 +174,21 @@ function ArenaBuilder.syncGeometry(existing: Folder?): Folder
 		)
 		cosmetic(leg, created, { Color = C.Leg })
 	end
+	end -- buildVisuals
 	tableModel.PrimaryPart = top
 
-	-- NET -------------------------------------------------------------------------------------------
+	-- NET (collision for characters; the ball uses TableWorld). Visible only without a table asset. ---------------
 	local netModel = ensure(arena, "Model", "Net") :: Model
 	local mesh, meshNew = part(netModel, "NetMesh")
 	setGeometry(mesh, Vector3.new(N.Length, N.Height, N.Thickness), CFrame.new(L.NetCenter), true, G.Table)
 	mesh.CanQuery = false
 	cosmetic(mesh, meshNew, { Color = C.Net, Transparency = 0.35 })
+	local function collisionOnly(p: BasePart)
+		if hasAsset then
+			p.Transparency = 1 -- the asset's net is the visible one; this part only blocks characters
+		end
+	end
+	collisionOnly(mesh)
 	local tape, tapeNew = part(netModel, "NetTape")
 	setGeometry(
 		tape,
@@ -176,6 +199,7 @@ function ArenaBuilder.syncGeometry(existing: Folder?): Folder
 	)
 	tape.CanQuery = false
 	cosmetic(tape, tapeNew, { Color = C.Line })
+	collisionOnly(tape)
 	local postHeight = N.Height + 0.1
 	for _, sign in { -1, 1 } do
 		local post, created = part(netModel, if sign < 0 then "PostLeft" else "PostRight")
@@ -188,6 +212,7 @@ function ArenaBuilder.syncGeometry(existing: Folder?): Folder
 		)
 		post.CanQuery = false
 		cosmetic(post, created, { Color = C.Leg })
+		collisionOnly(post)
 	end
 	if not netModel.PrimaryPart then
 		netModel.PrimaryPart = mesh
@@ -213,12 +238,16 @@ function ArenaBuilder.syncGeometry(existing: Folder?): Folder
 		ball.Transparency = 1
 	end
 	local visual, visualNew = part(ball, "BallVisual")
-	setGeometry(visual, Vector3.new(B.VisualDiameter, B.VisualDiameter, B.VisualDiameter), visual.CFrame, false, G.Ball)
+	-- The visual's SIZE is gameplay-matched (Config.Ball.VisualDiameter = the collision diameter at BallVisualScale 1);
+	-- its appearance (colour, material, textures, trail, decals) is yours and never written after creation.
+	setGeometry(visual, Vector3.new(B.VisualDiameter, B.VisualDiameter, B.VisualDiameter), ball.CFrame, false, G.Ball)
 	visual.CanQuery = false
 	if visualNew then
 		visual.Shape = Enum.PartType.Ball
-		visual.CFrame = ball.CFrame
 		ArenaBuilder.applyBallStyle({ BallVisual = visual }, Config.Ball.Style) -- initial look only
+	end
+	if gameplayOnly then
+		return arena
 	end
 
 	-- SPAWN MARKERS (position is YOURS to edit; only created here, never repositioned) -----------------
@@ -257,6 +286,141 @@ function ArenaBuilder.syncGeometry(existing: Folder?): Folder
 	return arena
 end
 
+-- TABLE ASSET FIT ---------------------------------------------------------------------------------------
+-- The uploaded table (Table/Visual/TableAsset) is authored at its own native size. fitTableAsset() maps it onto the
+-- gameplay table from Config with a per-zone linear map, recorded so re-fitting is exact and idempotent:
+--   * model attributes  Native*      : the native table (surface centre, width, length, surface/underside/floor heights,
+--                                      net height above the surface, net length), recorded on the FIRST fit;
+--   * part attributes   FitZone      : "Top" (the slab: top + lines), "Legs" (below the slab), "Net" (above the surface);
+--                       FitStructural: true = must match gameplay (top, lines, net); checked at Play and corrected in
+--                                      memory if it drifted. false = cosmetic geometry (legs, holders, clamp): only
+--                                      written by fitTableAsset(), never at Play, so your resizing of them sticks;
+--                       FitSource*   : the part's native size, position and rotation.
+-- Parts without FitZone (anything you add to the model later) are never moved or resized by code.
+-- Only Size and CFrame are ever written: colour, material, textures, SurfaceAppearance, children are untouched.
+
+local function zoneMap()
+	local T, N, L = Config.Table, Config.Net, Config.Layout
+	local O = Config.Arena.Origin
+	return {
+		origin = Vector3.new(O.X, L.SurfaceY, O.Z),
+		width = T.Width,
+		length = T.Length,
+		netLength = N.Length,
+		netHeight = N.Height,
+		surfaceY = L.SurfaceY,
+		topThickness = T.TopThickness,
+		floorY = L.FloorY,
+	}
+end
+
+-- Expected (size, cframe) for a fitted part, or nil if the part is not part of the fit.
+local function fittedPose(model: Model, p: BasePart): (Vector3?, CFrame?)
+	local zone = p:GetAttribute("FitZone")
+	local srcSize = p:GetAttribute("FitSourceSize")
+	local srcPos = p:GetAttribute("FitSourcePos")
+	local srcRot = p:GetAttribute("FitSourceRot")
+	local nc = model:GetAttribute("NativeCenter")
+	if typeof(zone) ~= "string" or typeof(srcSize) ~= "Vector3" or typeof(srcPos) ~= "Vector3" or typeof(nc) ~= "Vector3" then
+		return nil, nil
+	end
+	local rot = if typeof(srcRot) == "CFrame" then srcRot else CFrame.identity
+	local m = zoneMap()
+	local nW, nL = model:GetAttribute("NativeWidth") :: number, model:GetAttribute("NativeLength") :: number
+	local nUnder, nFloor = model:GetAttribute("NativeUndersideY") :: number, model:GetAttribute("NativeFloorY") :: number
+	local nNetH, nNetL = model:GetAttribute("NativeNetHeight") :: number, model:GetAttribute("NativeNetLength") :: number
+	local nSurf = nc.Y
+	local sz = m.length / nL
+	local sx, sy, y
+	local d = srcPos - nc
+	if zone == "Net" then
+		sx, sy = m.netLength / nNetL, m.netHeight / nNetH
+		y = m.surfaceY + d.Y * sy
+	elseif zone == "Legs" then
+		sx = m.width / nW
+		sy = (m.surfaceY - m.topThickness - m.floorY) / (nUnder - nFloor)
+		y = m.floorY + (srcPos.Y - nFloor) * sy
+	else -- "Top"
+		sx = m.width / nW
+		sy = m.topThickness / (nSurf - nUnder)
+		y = m.surfaceY + d.Y * sy
+	end
+	local scale = Vector3.new(sx, sy, sz)
+	-- Scale along each of the part's own axes (exact for axis-aligned parts, which the fit requires).
+	local function axisScale(axis: Vector3): number
+		return (axis * scale).Magnitude
+	end
+	local size = Vector3.new(
+		srcSize.X * axisScale(rot.RightVector),
+		srcSize.Y * axisScale(rot.UpVector),
+		srcSize.Z * axisScale(rot.LookVector)
+	)
+	local pos = Vector3.new(m.origin.X + d.X * sx, y, m.origin.Z + d.Z * sz)
+	return size, CFrame.new(pos) * rot
+end
+
+-- One-time setup of an imported table model: record the native layout. `surfacePart` is the playing-surface part
+-- (its top face is the playing surface), `netTopPart` the part whose top is the net's top and whose X size is the net
+-- length, `floorY` the native floor. Zones/structural flags come from `roles` (part name -> {zone, structural}).
+function ArenaBuilder.prepareTableAsset(model: Model, surfacePart: BasePart, netTopPart: BasePart, floorY: number, roles: { [string]: { any } })
+	local surfaceY = surfacePart.Position.Y + surfacePart.Size.Y / 2
+	model:SetAttribute("NativeCenter", Vector3.new(surfacePart.Position.X, surfaceY, surfacePart.Position.Z))
+	model:SetAttribute("NativeWidth", surfacePart.Size.X)
+	model:SetAttribute("NativeLength", surfacePart.Size.Z)
+	model:SetAttribute("NativeUndersideY", surfacePart.Position.Y - surfacePart.Size.Y / 2)
+	model:SetAttribute("NativeFloorY", floorY)
+	model:SetAttribute("NativeNetHeight", netTopPart.Position.Y + netTopPart.Size.Y / 2 - surfaceY)
+	model:SetAttribute("NativeNetLength", netTopPart.Size.X)
+	for _, p in model:GetDescendants() do
+		local role = p:IsA("BasePart") and roles[p.Name]
+		if role then
+			p:SetAttribute("FitZone", role[1])
+			p:SetAttribute("FitStructural", role[2] == true)
+			p:SetAttribute("FitSourceSize", p.Size)
+			p:SetAttribute("FitSourcePos", p.Position)
+			p:SetAttribute("FitSourceRot", p.CFrame.Rotation)
+		end
+	end
+end
+
+-- Fit the table asset to Config (Edit mode, after changing table dimensions; or at Play for drifted structural parts).
+-- structuralOnly: only parts with FitStructural (what Play does). Returns how many parts were changed.
+function ArenaBuilder.fitTableAsset(model: Model?, structuralOnly: boolean?): number
+	local asset = model or ArenaBuilder.tableAsset()
+	if not asset then
+		warn("[ArenaBuilder] no " .. Config.Names.TableAsset .. " under NotPongArena/Table/Visual")
+		return 0
+	end
+	local changed = 0
+	for _, p in asset:GetDescendants() do
+		if p:IsA("BasePart") and (not structuralOnly or p:GetAttribute("FitStructural")) then
+			local size, cf = fittedPose(asset, p)
+			if size and cf then
+				if (p.Size - size).Magnitude > TOLERANCE or (p.Position - cf.Position).Magnitude > TOLERANCE then
+					p.Size = size
+					p.CFrame = cf
+					changed += 1
+				end
+			end
+		end
+	end
+	return changed
+end
+
+-- Structural asset parts that disagree with the gameplay table (empty = the visible table matches the simulation).
+function ArenaBuilder.validateTableAsset(model: Model): { string }
+	local problems = {}
+	for _, p in model:GetDescendants() do
+		if p:IsA("BasePart") and p:GetAttribute("FitStructural") then
+			local size, cf = fittedPose(model, p)
+			if size and cf and ((p.Size - size).Magnitude > TOLERANCE or (p.Position - cf.Position).Magnitude > TOLERANCE) then
+				table.insert(problems, ("%s %s at %s, expected %s at %s"):format(p.Name, tostring(p.Size), tostring(p.Position), tostring(size), tostring(cf.Position)))
+			end
+		end
+	end
+	return problems
+end
+
 -- Compare the saved arena with Config. Returns a list of human-readable problems (empty = in sync).
 function ArenaBuilder.validate(arena: Folder): { string }
 	local problems = {}
@@ -283,6 +447,9 @@ function ArenaBuilder.validate(arena: Folder): { string }
 	for _, name in { Config.Names.PlayerSpawn, Config.Names.BotSpawn } do
 		expect(name, nil, nil)
 	end
+	local B = Config.Ball
+	expect("BallTemplate/Ball", Vector3.new(B.Diameter, B.Diameter, B.Diameter), nil)
+	expect("BallTemplate/Ball/BallVisual", Vector3.new(B.VisualDiameter, B.VisualDiameter, B.VisualDiameter), nil)
 	return problems
 end
 
@@ -316,10 +483,25 @@ function ArenaBuilder.load()
 		end
 		warn("  Run ArenaBuilder.syncGeometry() in Edit mode (or use the MCP) to make the fix permanent.")
 	end
-	-- Play writes NOTHING to the static arena unless it is out of date (or the ball template is missing); even then
-	-- cosmetics and spawn-marker positions are never touched.
+	-- Play writes NOTHING to the static arena unless its GAMEPLAY geometry is out of date (or the ball template is
+	-- missing); even then only the gameplay parts are corrected (gameplayOnly): visual parts, the table asset's cosmetic
+	-- parts, appearance and spawn-marker positions are never touched.
 	if #problems > 0 or not folder:FindFirstChild("BallTemplate") then
-		ArenaBuilder.syncGeometry(folder)
+		ArenaBuilder.syncGeometry(folder, true)
+	end
+	-- The visible table must agree with the simulated one: structural asset parts (top, lines, net) that drifted from
+	-- Config are re-fitted in memory, loudly. Cosmetic geometry (legs, holders) and every appearance property are kept.
+	local asset = ArenaBuilder.tableAsset(folder)
+	if asset then
+		local assetProblems = ArenaBuilder.validateTableAsset(asset)
+		if #assetProblems > 0 then
+			warn("[ArenaBuilder] table asset differs from the gameplay table (" .. #assetProblems .. " parts); re-fitting them in memory for this session.")
+			for i = 1, math.min(#assetProblems, 3) do
+				warn("  " .. assetProblems[i])
+			end
+			warn("  To resize the table change Config.Presentation, then run syncGeometry() and fitTableAsset() in Edit mode.")
+			ArenaBuilder.fitTableAsset(asset, true)
+		end
 	end
 
 	local tableModel = folder:FindFirstChild("Table") :: Model
@@ -329,6 +511,12 @@ function ArenaBuilder.load()
 	-- Spawn markers are visible in Studio for editing; hide them while playing.
 	playerSpawn.Transparency = 1
 	botSpawn.Transparency = 1
+	-- The paddle template is visible in Edit mode for editing; at Play it moves (unchanged) to ServerStorage, where
+	-- PaddleFactory clones it for every competitor.
+	local paddleTemplate = folder:FindFirstChild(Config.Names.PaddleTemplate)
+	if paddleTemplate then
+		paddleTemplate.Parent = game:GetService("ServerStorage")
+	end
 
 	-- DYNAMIC: the ONE active ball is the saved template; its appearance is left exactly as you made it. Any other
 	-- ball is removed so duplicates cannot appear.

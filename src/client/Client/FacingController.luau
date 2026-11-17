@@ -13,6 +13,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local PlatformZone = require(script.Parent:WaitForChild("PlatformZone"))
 
 local BIND_NAME = "NotPongFacing"
 
@@ -106,10 +107,23 @@ function FacingController:start()
 		if not character:GetAttribute("NotPongPlaced") then
 			character:GetAttributeChangedSignal("NotPongPlaced"):Wait()
 		end
-		if character.Parent then
+		self.placed = character
+		if character.Parent and PlatformZone.isOn() then
 			self:_attach(character)
 		end
 	end
+	-- Off the platform: standard Roblox facing (AutoRotate, the avatar turns toward its movement). Back on: face the table
+	-- again; the AlignOrientation eases the turn (Responsiveness), so there is no snap.
+	PlatformZone.onChanged(function(on)
+		local character = self.player.Character
+		if on then
+			if character and character.Parent and self.placed == character and self.character ~= character then
+				self:_attach(character)
+			end
+		else
+			self:_release()
+		end
+	end)
 	self.player.CharacterAdded:Connect(function(character)
 		task.spawn(onCharacter, character)
 	end)

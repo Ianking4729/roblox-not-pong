@@ -21,14 +21,85 @@ export type Window = {
 	idealPosition: Vector3,
 }
 
--- The paddle reach anchor: in front of and to the right of the character's root (same rule as the bot's Striker).
-function ShotInput.anchor(rootCFrame: CFrame, settings: any): Vector3?
+-- The paddle reach anchor: in front of the character's root and to its right (FOREHAND, same rule as the bot's
+-- Striker), or mirrored to its left for a BACKHAND (`stroke` = "Backhand" uses settings.BackhandAnchorRight).
+function ShotInput.anchor(rootCFrame: CFrame, settings: any, stroke: string?): Vector3?
 	local right = Vector3.new(rootCFrame.RightVector.X, 0, rootCFrame.RightVector.Z)
 	local fwd = Vector3.new(rootCFrame.LookVector.X, 0, rootCFrame.LookVector.Z)
 	if right.Magnitude < 1e-3 or fwd.Magnitude < 1e-3 then
 		return nil
 	end
-	return rootCFrame.Position + right.Unit * settings.AnchorRight + fwd.Unit * settings.AnchorForward
+	local side = settings.AnchorRight
+	if stroke == "Backhand" and settings.BackhandAnchorRight ~= nil then
+		side = settings.BackhandAnchorRight
+	end
+	return rootCFrame.Position + right.Unit * side + fwd.Unit * settings.AnchorForward
+end
+
+-- DIVES (Config.Movement.Dive*). Which dive a horizontal direction is, relative to the court-facing direction (the
+-- avatar's facing): "Back" when its backward share is at least DiveBackwardThreshold (S, S+A, S+D), else "Right" /
+-- "Left" by its sideways sign. Used by the client (animation) and the server alike.
+function ShotInput.diveKind(dir: Vector3, rootCFrame: CFrame): string
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	if flat.Magnitude < 1e-3 then
+		return "Right"
+	end
+	flat = flat.Unit
+	local look = Vector3.new(rootCFrame.LookVector.X, 0, rootCFrame.LookVector.Z)
+	local right = Vector3.new(rootCFrame.RightVector.X, 0, rootCFrame.RightVector.Z)
+	if look.Magnitude > 1e-3 and -flat:Dot(look.Unit) >= Config.Movement.DiveBackwardThreshold then
+		return "Back"
+	end
+	return if right.Magnitude > 1e-3 and flat:Dot(right.Unit) < 0 then "Left" else "Right"
+end
+
+-- The reach for a swing right now: the stroke's anchor and radius, extended while a dive's contact window is open
+-- (`diveDir` = that dive's horizontal direction, nil when not in a dive's contact window).
+function ShotInput.reachFor(rootCFrame: CFrame, settings: any, stroke: string?, diveDir: Vector3?): (Vector3?, number)
+	local anchor = ShotInput.anchor(rootCFrame, settings, stroke)
+	local reach = settings.PaddleReach
+	if anchor and diveDir then
+		local M = Config.Movement
+		local flat = Vector3.new(diveDir.X, 0, diveDir.Z)
+		if flat.Magnitude > 1e-3 then
+			anchor += flat.Unit * M.DiveAnchorAhead
+		end
+		reach += M.DiveReachBonus
+	end
+	return anchor, reach
+end
+
+-- Timing value used by the shot error model: release offset from the ideal moment, in half clean-windows.
+-- -1..+1 inside the clean window; a weak contact continues linearly to -2 / +2 at the edge of its band.
+function ShotInput.timingValue(offset: number): number
+	local S = Config.ShotControl
+	local half = math.max(S.ContactWindowDuration / 2, 1e-3)
+	if offset ~= offset then
+		return 0
+	end
+	local a = math.abs(offset)
+	local v
+	if a <= half then
+		v = a / half
+	else
+		local tol = math.max(if offset < 0 then S.EarlyReleaseTolerance else S.LateReleaseTolerance, 1e-3)
+		v = 1 + math.min((a - half) / tol, 1)
+	end
+	return if offset < 0 then -v else v
+end
+
+-- Is a contact at `p` (ball centre) with `power` a smash opportunity? (Height above the table, how far behind the
+-- player's own end line, and power: Config.ShotControl.Smash*.) Timing quality is checked separately by the caller.
+function ShotInput.smashEligible(p: Vector3, power: number): boolean
+	local S = Config.ShotControl
+	if power < S.SmashMinPower then
+		return false
+	end
+	if p.Y - Config.Layout.SurfaceY < S.SmashMinHeight then
+		return false
+	end
+	local behind = (p.Z - TableWorld.endLineZ("Player")) * TableWorld.towardSide("Player")
+	return behind <= S.SmashMaxBehindEndLine
 end
 
 -- Is a ball centre at `p` inside the paddle's reach (horizontal radius + height band above the floor)?
@@ -117,7 +188,9 @@ function ShotInput.contactWindow(
 	s.resting = false
 	local events: { BallPhysics.Event } = {}
 	local endZ = TableWorld.endLineZ("Player")
-	local n = math.floor((horizon or 1.5) / cfg.fixedStep)
+	-- 3 s: the server predicts from the moment of the opponent's hit, and a high lob (bot pop-up) takes well over 1.5 s
+	-- to bounce and fall back into reach (1.5 s made every lob "ball never in reach" on the server).
+	local n = math.floor((horizon or 3) / cfg.fixedStep)
 	local enter, exit, ideal, best, bestPos = nil :: number?, nil :: number?, 0, math.huge, Vector3.zero
 	for i = 1, n do
 		local before = #events

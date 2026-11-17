@@ -68,9 +68,54 @@ function Striker:shouldStrike(position: Vector3, velocity: Vector3): boolean
 	return velocity.Y <= 0 or pastEnd
 end
 
+-- How hard the incoming ball pressed this striker (0..1): out at the edge of its reach, fast, or curving
+-- (Config.BotPlay.Pressure*). `state` = the ball at contact. 0 when the settings have no pop-up values.
+function Striker:pressure(state): number
+	local S = self.settings :: any
+	if not S.PopupPressureChance or not state then
+		return 0
+	end
+	local a = self:anchor()
+	local reachTerm = 0
+	if a then
+		local d = Vector2.new(state.position.X - a.X, state.position.Z - a.Z).Magnitude / S.Reach
+		reachTerm = math.clamp((d - S.PressureReachFrom) / math.max(1 - S.PressureReachFrom, 1e-3), 0, 1)
+	end
+	local v = state.velocity
+	local speed = Vector2.new(v.X, v.Z).Magnitude
+	local speedTerm = math.clamp((speed - S.PressureSpeedFrom) / math.max(S.PressureSpeedTo - S.PressureSpeedFrom, 1e-3), 0, 1)
+	local spinTerm = math.clamp(math.abs(state.spin.Y) / math.max(S.PressureSpinFull, 1e-3), 0, 1)
+	return math.max(reachTerm, speedTerm, spinTerm)
+end
+
 -- Choose a target on the opponent's half (with placement variety and aim error) and solve the launch from `from`.
-function Striker:shot(from: Vector3, rng: Random)
+-- `state` (optional): the ball at contact. With Config.BotPlay pop-up settings, a pressed striker sometimes plays a
+-- high defensive LOB instead (chance = PopupRandomChance + PopupPressureChance * pressure): the smash opportunity.
+-- Returns shot, target, and "lob" | nil.
+function Striker:shot(from: Vector3, rng: Random, state: any?)
 	local S = self.settings
+	local P = S :: any
+	if P.PopupPressureChance and state then
+		local chance = (P.PopupRandomChance or 0) + P.PopupPressureChance * self:pressure(state)
+		if rng:NextNumber() < chance then
+			local target = TableWorld.pointOnHalf(
+				if self.side == "Player" then "Bot" else "Player",
+				P.PopupDepth,
+				rng:NextNumber(-P.PopupSpreadX, P.PopupSpreadX)
+			)
+			local lob = ShotSolver.solve(TableWorld.physics, from, target, {
+				speed = P.PopupSpeed + rng:NextNumber(-P.PopupSpeedVariation, P.PopupSpeedVariation),
+				topspin = P.PopupTopspin,
+				netZ = TableWorld.netZ,
+				netTopY = TableWorld.netTopY,
+				clearance = Config.Rally.NetClearance,
+				maxTime = 4,
+			})
+			if lob.ok then
+				return lob, target, "lob"
+			end -- no legal lob from here: play the normal return
+		end
+	end
 	local target = TableWorld.pointOnHalf(
 		if self.side == "Player" then "Bot" else "Player",
 		rng:NextNumber(S.TargetDepthMin, S.TargetDepthMax),

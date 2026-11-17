@@ -14,6 +14,19 @@
 --   RECOVERY          short pause; then IDLE (no second swing at the same ball)
 -- Resets to IDLE (charge and spin cleared) on: point reset (ball held), character respawn, input cancelled.
 --
+-- FOREHAND / BACKHAND: the mouse's horizontal SCREEN position (not the world, not the ball) picks the stroke: left half
+-- = backhand, right half = forehand (with a small dead zone around the centre, Config.ShotControl.StrokeDeadZone).
+-- While IDLE the stroke follows the pointer. It LOCKS when charging starts (including a queued press that starts later)
+-- and stays locked through SWING_RELEASED, CONTACT_RESOLVED and RECOVERY, so dragging across the centre for spin never
+-- changes the stroke. Any return to IDLE (end of recovery, cancel, focus loss, point reset, respawn) unlocks it and
+-- re-reads the pointer at once. Event "stroke" {stroke, locked} tells the stance; the press tells the server.
+
+-- DIVES (2026-11-16 pass 3): a dive's return is AUTOMATIC (the server plays it). The lunge cancels any charge (no stale
+-- release can follow), the incoming ball counts as swung at, and no charge can start for the whole dive.
+-- SERVE: while the local player's toss is in the air (snapshot flag `sv`), a FRESH press (never a button held from
+-- before the toss) starts the serve charge and locks the serve AIM from the cursor's screen X (ServeRules.aimFromScreen);
+-- dragging then only shapes the spin; release strikes. The timing bar shows ServeRules.phase (the toss's contact phase).
+-- Nothing slows down during a serve (2026-11-16 pass 3), and the rally slow motion is never predicted for a serve.
 -- CHARGE SLOW MOTION (Config.ChargeFreeze, solo only; decided by the SERVER): pressing near contact slows the rally.
 -- This client predicts the configured scale on the press frame; the server snapshot confirms mode "slow" or denies it.
 -- Power continues charging in real time, while release timing follows the slowed ball simulation.
@@ -28,6 +41,8 @@ local Config = require(Shared:WaitForChild("Config"))
 local ShotInput = require(Shared:WaitForChild("ShotInput"))
 local ShotLaunch = require(Shared:WaitForChild("ShotLaunch"))
 local TableWorld = require(Shared:WaitForChild("TableWorld"))
+local StancePose = require(Shared:WaitForChild("StancePose"))
+local ServeRules = require(Shared:WaitForChild("ServeRules"))
 
 local BallView = require(script.Parent:WaitForChild("BallView"))
 
@@ -85,6 +100,16 @@ function ShotController.start(player: Player)
 		moveEvents = 0, -- MouseMovement events seen (any state)
 		chargeMoveEvents = 0, -- ... while charging (reset at each press)
 		buttonDown = false, -- left button currently held
+		-- forehand / backhand
+		stroke = "Forehand", -- "Forehand" | "Backhand"
+		strokeLocked = false, -- true from the start of a charge until that stroke's recovery ends
+		pointerOverride = nil :: number?, -- development tests only: replaces the mouse X (fraction of the screen width)
+		-- serve
+		serving = false, -- the current charge / swing is at the local player's own serve toss
+		serveAim = 0, -- aim locked at the serve press (-1 .. 1)
+		serveStrokeOverride = nil :: string?, -- the serving posture's stroke while it is the local player's serve
+		-- dive
+		diving = false, -- a dive (lunge or get-up) is in progress: no charging; the server plays the return
 	}
 
 	-- Power right now (0..1): from hold time only.
@@ -112,6 +137,59 @@ function ShotController.start(player: Player)
 		self.topspin, self.sidespin, self.drag = 0, 0, Vector2.zero
 	end
 
+	-- The stroke the pointer asks for: screen X relative to the viewport centre (dead zone keeps the current stroke).
+	-- During the local player's serve the SERVING POSTURE decides instead (Config.Serve.Posture; ServeInput sets it via
+	-- setServeStroke): the cursor is only the serve aim there.
+	local function pointerStroke(): string
+		if self.serveStrokeOverride then
+			return self.serveStrokeOverride
+		end
+		local camera = workspace.CurrentCamera
+		local width = camera and camera.ViewportSize.X or 0
+		if width < 2 then
+			return self.stroke
+		end
+		local x = if self.pointerOverride then self.pointerOverride * width else UserInputService:GetMouseLocation().X
+		local f = x / width - 0.5
+		local dead = S.StrokeDeadZone or 0
+		if f < -dead then
+			return "Backhand"
+		elseif f > dead then
+			return "Forehand"
+		end
+		return self.stroke
+	end
+	-- While unlocked, follow the pointer. Cheap; called every frame and at every state change.
+	local function updateStroke()
+		if self.strokeLocked then
+			return
+		end
+		local s = pointerStroke()
+		if s ~= self.stroke then
+			self.stroke = s
+			self.window, self.windowFrozen = nil, false -- the other stroke reaches from the other anchor
+			fire("stroke", { stroke = s, locked = false })
+		end
+	end
+	local function lockStroke()
+		self.strokeLocked = false
+		updateStroke() -- the pointer's side at the moment charging actually starts
+		self.strokeLocked = true
+		fire("stroke", { stroke = self.stroke, locked = true })
+	end
+	local function unlockStroke()
+		if self.strokeLocked then
+			self.strokeLocked = false
+			fire("stroke", { stroke = self.stroke, locked = false })
+		end
+		updateStroke()
+	end
+	-- ServeInput: the serve stroke implied by the selected / locked serving posture (nil = back to the pointer).
+	function self.setServeStroke(stroke: string?)
+		self.serveStrokeOverride = stroke
+		updateStroke() -- (no-op while a charge has the stroke locked)
+	end
+
 	-- Slow our local animation tracks immediately; the server applies the authoritative movement speed.
 	local localLocked = false
 	local slowTracks: { [AnimationTrack]: number } = {}
@@ -121,6 +199,7 @@ function ShotController.start(player: Player)
 			return
 		end
 		localLocked = on
+		StancePose.setTimeScale(if on then CF.TimeScale else 1) -- tracks StancePose re-speeds every frame (footwork)
 		local character = player.Character
 		local hum = character and character:FindFirstChildOfClass("Humanoid")
 		local animator = hum and hum:FindFirstChildOfClass("Animator")
@@ -169,6 +248,7 @@ function ShotController.start(player: Player)
 		end
 		self.window, self.windowFrozen = nil, false
 		clearInput()
+		self.serving = false
 		local was = self.state
 		self.state = STATE.IDLE
 		if why then
@@ -177,6 +257,7 @@ function ShotController.start(player: Player)
 		if was ~= STATE.IDLE then
 			fire("reset", { why = why })
 		end
+		unlockStroke() -- back to IDLE: the pointer picks the next stroke
 	end
 
 	local function incomingNow(): boolean
@@ -184,10 +265,43 @@ function ShotController.start(player: Player)
 		return BallView.getState() ~= nil and (info.mode == "free" or info.mode == "slow") and info.incoming and info.hits ~= self.swungHits
 	end
 
-	local function anchor(): Vector3?
-		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
-		return root and ShotInput.anchor(root.CFrame, S) or nil
+	-- A dive (lunge or get-up) is in progress (server-set on the character): no manual charge at all.
+	local function diving(): boolean
+		local character = player.Character
+		local phase = character and character:GetAttribute(Config.Names.DiveStateAttribute)
+		return phase == "lunge" or phase == "recover"
 	end
+
+	-- The reach anchor and radius for the CURRENT stroke (locked while charging, following the pointer while idle), so
+	-- the contact window, the timing bar and the arrow match what the server will judge with the stroke sent at the press.
+	local function reachNow(): (Vector3?, number)
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not root then
+			return nil, S.PaddleReach
+		end
+		return ShotInput.reachFor(root.CFrame, S, self.stroke, nil)
+	end
+	local function anchor(): Vector3?
+		return (reachNow())
+	end
+	self.anchor = anchor
+	-- The root position the server may use for this swing's anchor (validated against its own view of the root).
+	local function rootClaim(): Vector3?
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		return root and root.Position or nil
+	end
+
+	-- Serve aim from the pointer's screen X (development tests may override it with pointerOverride).
+	local function pointerAim(): number
+		local camera = workspace.CurrentCamera
+		local width = camera and camera.ViewportSize.X or 0
+		if width < 2 then
+			return 0
+		end
+		local x = if self.pointerOverride then self.pointerOverride * width else UserInputService:GetMouseLocation().X
+		return ServeRules.aimFromScreen(x / width)
+	end
+	self.pointerAim = pointerAim
 
 	-- The server's slow-motion rule, evaluated on our own prediction of the same window (Config.ChargeFreeze.LeadTime).
 	local function freezeLikely(serverNow: number): boolean
@@ -213,8 +327,19 @@ function ShotController.start(player: Player)
 		if BallView.getState() == nil or (info.mode ~= "free" and info.mode ~= "slow") then
 			return false -- no live rally (between points): the click is not ours
 		end
-		if info.incoming and info.hits == self.swungHits then
+		local serve = info.serve == true
+		if serve and self.swungHits == -100 then
+			return false -- already swung at this toss
+		end
+		if not serve and info.incoming and info.hits == self.swungHits then
 			return false -- already swung at this ball
+		end
+		if diving() then
+			return false -- the dive plays its own return; no manual charge until the get-up is over
+		end
+		self.serving = serve
+		if serve then
+			self.serveAim = pointerAim() -- locked now; later mouse movement only shapes the spin
 		end
 		self.pressAt = workspace:GetServerTimeNow()
 		self.dragStart = UserInputService:GetMouseLocation()
@@ -222,8 +347,11 @@ function ShotController.start(player: Player)
 		clearInput()
 		refreshSpin()
 		self.state = STATE.CHARGING
-		chargeRemote:FireServer({ t = self.pressAt })
-		if freezeLikely(self.pressAt) then
+		lockStroke()
+		chargeRemote:FireServer({ t = self.pressAt, stroke = self.stroke, aim = if serve then self.serveAim else nil, root = rootClaim() })
+		if serve then
+			fire("serveAim", { aim = self.serveAim, locked = true })
+		elseif freezeLikely(self.pressAt) then
 			-- Predict slow motion on this frame; the server confirms or denies within one round trip.
 			self.freezePredicted, self.freezePressAt, self.freezeHits = true, self.pressAt, info.hits
 			BallView.setLocalTimeScale(CF.TimeScale)
@@ -241,7 +369,7 @@ function ShotController.start(player: Player)
 		local serverNow = workspace:GetServerTimeNow()
 		refreshSpin()
 		self.releasedPower = ShotLaunch.powerFromHold(serverNow - self.pressAt)
-		if not incomingNow() then
+		if not incomingNow() and not (self.serving and BallView.getInfo().serve) then
 			-- Released before the opponent's return is on its way: nothing to hit, nothing is sent.
 			reset("released with no ball to hit")
 			fire("cancel", { why = "no ball to hit" })
@@ -250,7 +378,7 @@ function ShotController.start(player: Player)
 		self.seq += 1
 		self.sentAt = os.clock()
 		self.releaseTiming = if self.window then serverNow - self.window.ideal else nil
-		self.swungHits = BallView.getInfo().hits
+		self.swungHits = if self.serving then -100 else BallView.getInfo().hits
 		self.state = STATE.SWING_RELEASED
 		self.lastResult, self.lastReason = "...", if auto then "auto-release" else ""
 		local f = self.freeze
@@ -263,6 +391,8 @@ function ShotController.start(player: Player)
 			frozen = frozen,
 			strikeDelay = nil, -- server rewinds and judges the actual release contact
 			quality = if f then f.q else nil,
+			stroke = self.stroke, -- (locked since the press)
+			serve = self.serving,
 		})
 		local d = self.dragOverride or self.drag
 		swingRemote:FireServer({
@@ -272,6 +402,7 @@ function ShotController.start(player: Player)
 			t = serverNow,
 			pressT = self.pressAt, -- informational: the server measures the hold from its own record of the press
 			freeze = if f then f.id else nil,
+			root = rootClaim(), -- the root at the release (the server uses it within MaxRootMismatch of its own view)
 		})
 		-- The server's normal-speed snapshot confirms the end of slow motion.
 	end
@@ -284,6 +415,11 @@ function ShotController.start(player: Player)
 	end
 
 	resultRemote.OnClientEvent:Connect(function(msg)
+		if typeof(msg) == "table" and msg.dive and msg.seq == -2 then
+			-- the server resolved our dive's automatic contact (a save or a mishit): feedback only
+			fire("dive", { result = msg.result, reason = msg.reason, contact = msg.contact })
+			return
+		end
 		if typeof(msg) == "table" and msg.freeze and msg.seq == -1 then
 			-- the server ran the slow-motion window out before our release arrived
 			if self.state == STATE.CHARGING then
@@ -308,8 +444,9 @@ function ShotController.start(player: Player)
 				return Enum.ContextActionResult.Sink
 			end
 			-- Not possible yet (recovering from the last swing, or between points): if the button is still held when it
-			-- becomes possible, charging starts then (power counts from that moment, not from the early press).
-			self.pendingPress = true
+			-- becomes possible, charging starts then (power counts from that moment, not from the early press). Never for a
+			-- serve: a button held from before the toss is stale (the serve needs a fresh press).
+			self.pendingPress = not BallView.isHeld()
 			return Enum.ContextActionResult.Pass
 		elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
 			self.pendingPress = false
@@ -358,11 +495,36 @@ function ShotController.start(player: Player)
 		end
 	end)
 
-	player.CharacterAdded:Connect(function()
+	-- A dive (server-confirmed on the character) COMMITS: any charge is cancelled (the server dropped it too, so a later
+	-- release can never become a second shot), a held button does not restart one, and the incoming ball counts as swung
+	-- at. The server plays the dive's automatic return.
+	local function watchDive(character: Model)
+		character:GetAttributeChangedSignal(Config.Names.DiveStateAttribute):Connect(function()
+			local phase = character:GetAttribute(Config.Names.DiveStateAttribute)
+			self.diving = phase == "lunge" or phase == "recover"
+			if phase == "lunge" then
+				self.pendingPress = false
+				local info = BallView.getInfo()
+				if info.incoming then
+					self.swungHits = info.hits
+				end
+				if self.state == STATE.CHARGING then
+					reset("dive")
+					fire("cancel", { why = "dive" })
+				end
+			end
+		end)
+	end
+	if player.Character then
+		watchDive(player.Character)
+	end
+	player.CharacterAdded:Connect(function(character)
 		self.pendingPress = false
+		self.diving = false
 		reset("respawned")
 		endLocalSlowMotion()
 		localLocked = false
+		watchDive(character)
 	end)
 	UserInputService.WindowFocusReleased:Connect(function()
 		if self.state == STATE.CHARGING then
@@ -371,28 +533,27 @@ function ShotController.start(player: Player)
 		end
 	end)
 
-	-- Contact window for the current ball, in SERVER time. Predicted from the latest server snapshot (exact state at a
-	-- known server time), the same input the server judges with, using the paddle anchor where the player stands now.
-	-- Recomputed every frame while the player moves; frozen once the ball is inside reach.
+	-- Contact window for the current ball, in SERVER time (2026-11-16 pass 3). Computed EXACTLY like the server's: from the
+	-- snapshot taken at the opponent's hit (`incSnap`, the same state as the server's incomingState) with the paddle anchor
+	-- where the player stands NOW, every frame (no freezing), because the server judges with the anchor at the release
+	-- (the root this client reports, bounded by the server's own view). So the timing bar and the arrow's release-now
+	-- timing match the server's verdict even while moving.
+	local incSnap: any = nil
 	local function updateWindow(snap, bounced: boolean, now: number)
-		if self.windowFrozen then
-			return
-		end
-		local a = anchor()
+		local a, reach = reachNow()
 		if not a then
 			return
 		end
-		local w = ShotInput.contactWindow(snap.state, a, S.PaddleReach, bounced)
+		local src, srcBounced = snap, bounced
+		if incSnap and incSnap.t <= snap.t then
+			src, srcBounced = incSnap, (incSnap.b or 0) >= 1
+		end
+		local w = ShotInput.contactWindow(src.state, a, reach, srcBounced)
 		if not w then
 			self.window = nil -- not reachable from where the player stands right now (may still be moving)
 			return
 		end
-		if w.enter <= 2 * TableWorld.physics.fixedStep and self.window then
-			-- this snapshot was taken with the ball already in reach: keep the earlier full window
-			self.windowFrozen = now >= self.window.enter
-			return
-		end
-		self.window = { enter = snap.t + w.enter, ideal = snap.t + w.ideal, exit = snap.t + w.exit, idealPosition = w.idealPosition }
+		self.window = { enter = src.t + w.enter, ideal = src.t + w.ideal, exit = src.t + w.exit, idealPosition = w.idealPosition }
 		self.windowFrozen = now >= self.window.enter
 	end
 
@@ -403,25 +564,34 @@ function ShotController.start(player: Player)
 		local now = os.clock()
 		local serverNow = workspace:GetServerTimeNow()
 
-		if info.mode == "held" and self.state ~= STATE.IDLE then
+		if (info.mode == "held" or info.mode == "hand") and self.state ~= STATE.IDLE then
 			reset("point reset")
 			fire("cancel", { why = "point reset" })
 		end
 
-		-- A new incoming ball: forget the previous ball's window.
+		-- A new incoming ball: forget the previous ball's window; remember the snapshot of the opponent's hit.
 		if incoming and info.hits ~= lastIncomingHits then
 			lastIncomingHits = info.hits
 			self.window, self.windowFrozen = nil, false
-		elseif not incoming and (self.state == STATE.IDLE or self.state == STATE.CHARGING) then
+			incSnap = BallView.getSnapshot()
+		elseif not incoming and not info.serve and (self.state == STATE.IDLE or self.state == STATE.CHARGING) then
 			self.window, self.windowFrozen = nil, false
 		end
 
-		if self.pendingPress and self.state == STATE.IDLE and press() then
+		if self.pendingPress and self.state == STATE.IDLE and not info.serve and press() then
 			self.pendingPress = false
 		end
+		if info.serve and self.state == STATE.IDLE and self.swungHits ~= -100 then
+			self.pendingPress = false -- (a stale button never starts the serve)
+		end
+		if not info.serve and self.swungHits == -100 and info.mode ~= "slow" then
+			self.swungHits = -1 -- the serve is over (struck or dropped)
+		end
+
+		updateStroke() -- (no-op while locked)
 
 		-- Charge slow motion: confirmation / denial / end, from the server's snapshots.
-		local serverFreeze = if info.mode == "slow" then info.freeze else nil
+		local serverFreeze = if info.mode == "slow" and info.freeze then info.freeze else nil
 		if serverFreeze then
 			if self.state == STATE.CHARGING and (self.freeze == nil or self.freeze.id ~= serverFreeze.id) then
 				local first = self.freeze == nil and not self.freezePredicted
@@ -451,6 +621,10 @@ function ShotController.start(player: Player)
 				self.swungHits = info.hits
 				self.releasedPower = self.power()
 				resolve("miss", "held too long (slow motion ran out)")
+			elseif self.serving and w and serverNow > w.exit + 0.05 then
+				self.swungHits = -100 -- the toss dropped past the paddle while charging
+				self.releasedPower = self.power()
+				resolve("miss", "held past the toss")
 			elseif not f and not self.freezePredicted and incoming and w and self.windowFrozen and serverNow >= ShotInput.windowEnd(w) then
 				if S.AutoReleaseAtWindowEnd then
 					release(true)
@@ -473,7 +647,25 @@ function ShotController.start(player: Player)
 		end
 
 		local snap = BallView.getSnapshot()
-		if incoming and snap and info.mode == "free" and not self.freezePredicted and (self.state == STATE.IDLE or self.state == STATE.CHARGING) then
+		if info.serve and snap and (self.state == STATE.IDLE or self.state == STATE.CHARGING) then
+			-- the serve toss's contact phase (server time), from the latest snapshot of the toss and the current stroke's
+			-- reach (the same simulation the server judges with; the player is locked in place while serving)
+			local a = anchor()
+			local w = a and ServeRules.phase(snap.state, a, S.PaddleReach)
+			if w then
+				self.window = {
+					enter = snap.t + w.enter,
+					ideal = snap.t + w.ideal,
+					exit = snap.t + w.exit,
+					cleanStart = snap.t + w.cleanStart,
+					cleanEnd = snap.t + w.cleanEnd,
+					idealPosition = w.idealPosition,
+				}
+				self.windowFrozen = false
+			else
+				self.window = nil
+			end
+		elseif incoming and snap and info.mode == "free" and not self.freezePredicted and (self.state == STATE.IDLE or self.state == STATE.CHARGING) then
 			updateWindow(snap, snap.b >= 1, serverNow)
 		end
 	end)
@@ -496,6 +688,16 @@ function ShotController.start(player: Player)
 			elseif cmd == "move" and self.state == STATE.CHARGING then
 				self.drag = ShotInput.clampDrag(self.drag + arg)
 				refreshSpin()
+			elseif cmd == "pointer" then
+				self.pointerOverride = arg -- fraction of the screen width (0 = left edge), nil = the real mouse
+				updateStroke()
+			elseif cmd == "cancel" then
+				onButton(nil, Enum.UserInputState.Cancel)
+			elseif cmd == "blur" then
+				if self.state == STATE.CHARGING then
+					reset("window lost focus")
+					fire("cancel", { why = "window lost focus" })
+				end
 			end
 			local w = self.window
 			local now = workspace:GetServerTimeNow()
@@ -521,6 +723,15 @@ function ShotController.start(player: Player)
 				freezePredicted = self.freezePredicted,
 				freezeLeft = self.freeze and (self.freeze.ends - now) or nil,
 				ballMode = BallView.getInfo().mode,
+				stroke = self.stroke,
+				strokeLocked = self.strokeLocked,
+				serving = self.serving,
+				serveAim = self.serveAim,
+				serveStroke = self.serveStrokeOverride,
+				serveFlag = BallView.getInfo().serve,
+				diving = self.diving,
+				swungHits = self.swungHits,
+				hits = BallView.getInfo().hits,
 			}
 		end
 		bridge.Parent = player -- (not PlayerGui: a respawn clears PlayerGui)

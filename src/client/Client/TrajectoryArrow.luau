@@ -155,8 +155,14 @@ function TrajectoryArrow.new(playerGui: Instance)
 	local snap = true
 	local kind = "ok"
 	local weak = false
+	local smash = false -- a smash is lined up: gold arrow + "SMASH" label (red NET / OUT still wins)
+	local SMASH_COLOR = Config.ShotControl.SmashColor
 
 	local self = {}
+
+	function self.setSmash(v: boolean)
+		smash = v
+	end
 
 	-- points: the simulated path (contact ... first contact). resultKind: "ok" | "net" | "own" | "out".
 	function self.set(points: { Vector3 }, resultKind: string, isWeak: boolean)
@@ -171,6 +177,9 @@ function TrajectoryArrow.new(playerGui: Instance)
 			goal[i] = p
 		end
 		goal[N + 2] = tip
+		if resultKind ~= kind then
+			snap = true -- a changed verdict (ok / risky / net / out) is drawn at once, never eased in from the old path
+		end
 		kind, weak = resultKind, isWeak
 		if not visible then
 			snap = true
@@ -216,9 +225,11 @@ function TrajectoryArrow.new(playerGui: Instance)
 			attachments[i].Position = shown[i]
 		end
 
-		local bad = kind ~= "ok"
-		local color = if bad then A.BadColor else A.Color
-		local glowColor = if bad then A.BadColor else A.GlowColor
+		local risky = kind == "risky" -- lands now, but a moment later would not / right on an edge (ShotFeedback)
+		local bad = kind ~= "ok" and not risky
+		local riskyColor = A.RiskyColor or A.BadColor
+		local color = if bad then A.BadColor elseif risky then riskyColor elseif smash then SMASH_COLOR else A.Color
+		local glowColor = if bad then A.BadColor elseif risky then riskyColor elseif smash then SMASH_COLOR else A.GlowColor
 		local extra = if weak then A.WeakTransparency else 0
 		local core = ColorSequence.new(color)
 		local glow = ColorSequence.new(glowColor)
@@ -246,7 +257,7 @@ function TrajectoryArrow.new(playerGui: Instance)
 		head.Enabled, headGlow.Enabled = true, true
 
 		local tip = shown[N + 2]
-		local onTable = kind == "ok" or kind == "own"
+		local onTable = kind == "ok" or kind == "own" or risky
 		ringGui.Enabled = onTable
 		if onTable then
 			ringPart.CFrame = CFrame.new(tip.X, tip.Y - Config.Ball.Radius + 0.06, tip.Z)
@@ -254,10 +265,12 @@ function TrajectoryArrow.new(playerGui: Instance)
 			ring.BackgroundColor3 = glowColor
 			ringStroke.Transparency = 0.1 + extra
 		end
-		billboard.Enabled = bad
-		if bad then
+		billboard.Enabled = bad or smash or risky
+		if bad or smash or risky then
 			labelPart.CFrame = CFrame.new(tip)
-			text.Text = if kind == "net" then "NET" elseif kind == "own" then "OWN SIDE" else "OUT"
+			local what = if risky then "RISKY" elseif not bad then "" elseif kind == "net" then "NET" elseif kind == "own" then "OWN SIDE" else "OUT"
+			text.Text = if smash and (bad or risky) then "SMASH " .. what elseif smash then "SMASH" else what
+			text.TextColor3 = if bad then A.BadColor elseif risky then riskyColor else SMASH_COLOR
 		end
 	end
 

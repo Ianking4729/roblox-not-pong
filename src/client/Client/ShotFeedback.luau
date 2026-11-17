@@ -13,6 +13,13 @@
 --                         from the predicted contact point.
 -- It reads the ShotController (state, power, drag, spin, window) and listens to its events; it never changes them and
 -- never feeds anything back to the server. Nothing here follows the cursor as a target. Tunables: Config.Feedback.
+--
+-- TIMING ERROR (2026-11-15): the arrow predicts the shot you would get by releasing RIGHT NOW: the ball's position at
+-- this moment (inside the contact window), the deterministic timing error of this moment (ShotLaunch timing: early =
+-- across the body and long, late = the other way and low), the stretch from your stroke's anchor, and the weak-contact
+-- penalty when "now" is in a weak band. So as the ball comes in the arrow swings through the error and is straightest
+-- at the ideal moment. SMASH: when the contact qualifies (ShotInput.smashEligible) the arrow turns gold with "SMASH"
+-- and the release plays the overhead swing.
 
 local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -20,6 +27,8 @@ local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
+local BallPhysics = require(Shared:WaitForChild("BallPhysics"))
+local TableWorld = require(Shared:WaitForChild("TableWorld"))
 local ShotInput = require(Shared:WaitForChild("ShotInput"))
 local ShotLaunch = require(Shared:WaitForChild("ShotLaunch"))
 local StancePose = require(Shared:WaitForChild("StancePose"))
@@ -93,6 +102,10 @@ local function describe(result: string, reason: string, offset: number?): (strin
 	elseif result == "weak" then
 		local early = r == "early" or (offset ~= nil and offset < 0)
 		return if early then "WEAK  \u{2022}  EARLY" else "WEAK  \u{2022}  LATE", TIMING.WeakColor
+	elseif result == "dive" then
+		return "DIVE SAVE", TIMING.CleanColor
+	elseif result == "diveMishit" then
+		return "DIVE MISHIT", TIMING.MissColor
 	elseif result == "miss" then
 		if string.find(r, "late") or string.find(r, "held past") then
 			return "LATE", TIMING.MissColor
@@ -234,9 +247,33 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	local lastPredTop, lastPredSide = 0, 0 -- the spin the arrow's last prediction used
 
 	-- ---------- swing + impact (events from the controller) ----------
+	-- Confirmed charge slow motion: where "release now" falls on the SLOWED timeline, relative to the ideal moment
+	-- (simulation seconds; negative = early). The server judges the release there (simRelease vs the contact window).
+	local function slowMotionOffset(): number?
+		local f = controller.freeze
+		if not f then
+			return nil
+		end
+		return -((f.strikeIn or 0) - (os.clock() - BallView.getInfo().received) * Config.ChargeFreeze.TimeScale)
+	end
 	local function estimateQuality(): string
 		if controller.freeze then
-			return controller.freeze.q -- server's quality estimate when slow motion began
+			-- (2026-11-16 pass 3: was the quality the server estimated when slow motion BEGAN, so a release still before the
+			-- window opened showed a clean, safe arrow and then missed) judge "release now" on the slowed timeline
+			local w = controller.window
+			local off = slowMotionOffset()
+			if not w or not off then
+				return controller.freeze.q
+			end
+			local half = S.ContactWindowDuration / 2
+			if off < w.enter - w.ideal or off > w.exit - w.ideal then
+				return "miss"
+			elseif math.abs(off) <= half then
+				return "clean"
+			elseif (off < 0 and -off <= half + S.EarlyReleaseTolerance) or (off > 0 and off <= half + S.LateReleaseTolerance) then
+				return "weak"
+			end
+			return "miss"
 		elseif controller.freezePredicted then
 			return "clean"
 		end
@@ -244,10 +281,13 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 		if not w then
 			return "miss"
 		end
-		local off = workspace:GetServerTimeNow() - w.ideal
+		local now = workspace:GetServerTimeNow()
+		local off = now - w.ideal
 		local half = S.ContactWindowDuration / 2
-		if workspace:GetServerTimeNow() < w.enter or workspace:GetServerTimeNow() > w.exit then
+		if now < w.enter or now > w.exit then
 			return "miss"
+		elseif w.cleanStart then -- a serve's contact phase: clean in the middle, weak at the edges (both legal)
+			return if now >= w.cleanStart and now <= w.cleanEnd then "clean" else "weak"
 		elseif math.abs(off) <= half then
 			return "clean"
 		elseif (off < 0 and -off <= half + S.EarlyReleaseTolerance) or (off > 0 and off <= half + S.LateReleaseTolerance) then
@@ -256,9 +296,23 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 		return "miss"
 	end
 
+	local currentSmash = false -- the arrow's latest prediction is a smash (drives the overhead swing on release)
 	controller.on(function(event: string, data: any)
 		if event == "slowMotion" then
-			setTint(data.active)
+			setTint(data.active) -- (rally charge slow motion only: nothing slows a serve)
+		elseif event == "dive" then
+			-- the server resolved our dive's automatic contact
+			local text, color = describe(data.result, data.reason, nil)
+			if text then
+				resultLabel.Text = text
+				resultLabel.TextColor3 = color
+				resultLabel.TextTransparency = 0
+				resultLabel.TextStrokeTransparency = 0.35
+				resultUntil = os.clock() + TIMING.ResultShowTime
+			end
+			if impactFx and typeof(data.contact) == "Vector3" then
+				impactFx.play(data.contact, if data.result == "dive" then "clean" else "weak")
+			end
 		elseif event == "cancel" or event == "reset" then
 			arrow.hide()
 		elseif event == "release" then
@@ -273,13 +327,16 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 			local q = data.quality or estimateQuality()
 			local strength = if q == "clean" then Config.Swing.CleanStrength elseif q == "weak" then Config.Swing.WeakStrength else Config.Swing.MissStrength
 			local character = player.Character
-			if character then
+			if character and data.serve then
+				-- the serve strike is played by the serve controller (it continues from the toss's cocked pose)
+			elseif character then
 				-- The server judges the release moment on its slowed simulation timeline.
 				local delay = math.max((data.strikeDelay or 0) - Config.Swing.Duration * 0.4, 0)
+				local kind = if currentSmash and q ~= "miss" then "Smash" else nil
 				if delay > 0 then
-					task.delay(delay, StancePose.playSwing, character, strength)
+					task.delay(delay, StancePose.playSwing, character, strength, data.stroke, kind)
 				else
-					StancePose.playSwing(character, strength)
+					StancePose.playSwing(character, strength, data.stroke, kind)
 				end
 			end
 		elseif event == "result" then
@@ -302,11 +359,87 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	end)
 
 	-- ---------- prediction ----------
-	-- The shot you would play if you released at the window's ideal moment: same ShotLaunch + BallPhysics as the server.
-	local function predict(contact: Vector3, power: number, top: number, side: number)
-		local launch = ShotLaunch.compute(contact, power, top, side)
+	-- The shot you would play if you released NOW: same ShotLaunch (timing error, stretch, weak penalty, smash) +
+	-- BallPhysics as the server's playerLaunch.
+	local function predict(contact: Vector3, power: number, top: number, side: number, quality: string, offset: number?, smash: boolean)
+		local a = controller.anchor()
+		local opts: ShotLaunch.Options = {
+			stroke = controller.stroke,
+			timing = if offset then ShotInput.timingValue(offset) else nil,
+			stretch = if a then Vector2.new(contact.X - a.X, contact.Z - a.Z).Magnitude / S.PaddleReach else 0,
+			smash = smash,
+		}
+		if quality == "weak" and not smash then
+			top, side = top * S.WeakSpinFactor, side * S.WeakSpinFactor
+			opts.speedFactor = S.WeakSpeedFactor
+		end
+		local launch = ShotLaunch.compute(contact, power, top, side, opts)
 		local result = ShotLaunch.predictPath(contact, launch.velocity, launch.spin, path, 2)
-		return { kind = result.kind, contact = contact }
+		-- HONESTY (2026-11-16 pass 3): a landing that only works for this exact instant is not shown as safe. If the same
+		-- shot released ARROW.TimingLookahead later (about a frame or two of reaction) would fail, or the landing is within
+		-- ARROW.EdgeMargin of a table edge / the net line, the arrow turns amber and says RISKY.
+		local kind = result.kind
+		if kind == "ok" then
+			local risky = false
+			local land = result.position
+			local c = TableWorld.center
+			local toward = TableWorld.towardSide("Bot")
+			local depth = (land.Z - c.Z) * toward -- studs past the net on the opponent's half
+			local margin = math.min(TableWorld.halfWidth - math.abs(land.X - c.X), TableWorld.halfLength - depth, depth)
+			if margin < (ARROW.EdgeMargin or 0) then
+				risky = true
+			elseif offset ~= nil and (ARROW.TimingLookahead or 0) > 0 then
+				local later = table.clone(opts)
+				later.timing = ShotInput.timingValue(offset + ARROW.TimingLookahead)
+				local l2 = ShotLaunch.compute(contact, power, top, side, later)
+				if ShotLaunch.predictPath(contact, l2.velocity, l2.spin, nil, 2).kind ~= "ok" then
+					risky = true
+				end
+			end
+			if risky then
+				kind = "risky"
+			end
+		end
+		return {
+			kind = kind,
+			contact = contact,
+			smash = smash,
+			yaw = launch.yawError,
+			pitch = launch.pitchError,
+			offset = offset,
+			stretch = opts.stretch,
+			risk = launch.risk,
+			at = workspace:GetServerTimeNow(),
+		}
+	end
+
+	-- Where the ball will be at server time `t`, from the latest server snapshot (the same input the server judges with).
+	-- The incoming flight is simulated ONCE per snapshot (one position per physics tick) and then looked up, so the arrow
+	-- can re-predict often without re-simulating the incoming ball every time.
+	local trajSnap: any = nil
+	local trajPositions: { Vector3 } = {}
+	local function ballAt(t: number): Vector3?
+		local snap = BallView.getSnapshot()
+		if not snap then
+			return nil
+		end
+		local step = TableWorld.physics.fixedStep
+		if trajSnap ~= snap then
+			trajSnap = snap
+			table.clear(trajPositions)
+			local s = BallPhysics.copyState(snap.state)
+			s.resting = false
+			trajPositions[1] = s.position
+			for i = 2, math.floor(1.5 / step) do
+				BallPhysics.tick(s, TableWorld.physics, TableWorld.world)
+				trajPositions[i] = s.position
+				if s.resting then
+					break
+				end
+			end
+		end
+		local i = math.clamp(math.floor((t - snap.t) / step + 0.5) + 1, 1, #trajPositions)
+		return trajPositions[i]
 	end
 
 	-- ---------- TEMPORARY input debug overlay (Config.ShotControl.ShowInputDebug) ----------
@@ -363,38 +496,58 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 		local power = controller.power()
 		local top, side = controller.topspin, controller.sidespin
 		local contactAt: Vector3? = nil
-		if charging and freeze then
+		local offset: number? = nil -- release-now timing relative to the ideal moment (seconds; nil = none)
+		if controller.serving then
+			-- a serve: no predicted path (the aim line shows the direction only; where it lands is up to the inputs)
+			arrow.hide()
+		elseif charging and freeze then
 			contactAt = freeze.at
+			-- confirmed slow motion: "release now" on the slowed timeline (early or late of the ideal moment)
+			offset = slowMotionOffset()
 		elseif charging and w and (frozenNow or serverNow <= (w :: ShotInput.Window).exit) then
-			contactAt = (w :: ShotInput.Window).idealPosition
+			local win = w :: ShotInput.Window
+			if frozenNow then
+				contactAt = win.idealPosition -- (slow motion predicted, not confirmed yet)
+			else
+				contactAt = ballAt(math.clamp(serverNow, win.enter, win.exit)) or win.idealPosition
+				offset = serverNow - win.ideal
+			end
 		end
 		if contactAt then
 			local c = contactAt :: Vector3
-			local key = ("%d|%d,%d|%.2f,%.2f,%.2f"):format(
+			local quality = estimateQuality()
+			local smash = ShotInput.smashEligible(c, power) and quality ~= "miss"
+			local key = ("%d|%d,%d|%.2f,%.2f,%.2f|%s|%s|%d"):format(
 				math.floor(power * 200 + 0.5),
 				math.floor(top / 2 + 0.5),
 				math.floor(side / 2 + 0.5),
 				c.X,
 				c.Y,
-				c.Z
+				c.Z,
+				quality,
+				tostring(smash),
+				if offset then math.floor(offset * 100 + 0.5) else 9999
 			)
 			if key ~= predictKey and nowClock >= nextPredictAt then
 				predictKey = key
 				local t0 = os.clock()
-				prediction = predict(c, power, top, side)
+				prediction = predict(c, power, top, side, quality, offset, smash)
 				lastPredTop, lastPredSide = top, side
 				-- Adaptive budget: a slow prediction pushes the next one back in proportion (never eats the frame rate).
 				lastPredictCost = os.clock() - t0
-				nextPredictAt = nowClock + math.max(ARROW.RecomputeInterval, lastPredictCost * 6)
+				nextPredictAt = nowClock + math.max(ARROW.RecomputeInterval, lastPredictCost * 3)
 				arrow.set(path, (prediction :: any).kind, false)
+				arrow.setSmash(smash)
+				currentSmash = smash
 			end
-			arrow.setWeak(estimateQuality() == "weak")
+			arrow.setWeak(quality == "weak" or quality == "miss")
 			arrow.step(dt)
 		else
 			if prediction then
 				prediction = nil
 				predictKey = ""
 			end
+			currentSmash = false
 			arrow.hide()
 		end
 
@@ -477,6 +630,9 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 			local cs, ce = math.max(win.ideal - half, win.enter), math.min(win.ideal + half, win.exit)
 			local es = math.max(win.ideal - half - S.EarlyReleaseTolerance, win.enter)
 			local le = math.min(win.ideal + half + S.LateReleaseTolerance, win.exit)
+			if win.cleanStart then -- a serve's contact phase (ServeRules.phase): weak edges, clean middle
+				cs, ce, es, le = win.cleanStart, win.cleanEnd, win.enter, win.exit
+			end
 			local function place(z: Frame, a: number, b: number)
 				local xa, xb = x(a), x(b)
 				z.Position = UDim2.fromScale(xa, 0.5)
@@ -516,6 +672,13 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 				visible = arrow.isVisible(),
 				kind = prediction and prediction.kind,
 				contact = prediction and prediction.contact,
+				smash = prediction and prediction.smash,
+				yaw = prediction and prediction.yaw,
+				pitch = prediction and prediction.pitch,
+				offset = prediction and prediction.offset,
+				stretch = prediction and prediction.stretch,
+				risk = prediction and prediction.risk,
+				age = prediction and (workspace:GetServerTimeNow() - prediction.at),
 				path = pts, -- the latest simulated path (contact ... first contact)
 				shownTip = shown[#shown],
 				shownCount = #shown,

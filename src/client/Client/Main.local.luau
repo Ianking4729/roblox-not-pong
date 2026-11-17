@@ -21,6 +21,19 @@ local FrameDriver = require(Client:WaitForChild("FrameDriver"))
 
 local player = Players.LocalPlayer
 
+-- Animation retargeting off before any character animates (Config.Animation: it double-scaled the default walk's hip
+-- motion on our 3.37x avatars, which made walking off the platform look shaky). The local character animates here.
+do
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+	pcall(function()
+		workspace.Retargeting = Config.Animation.Retargeting
+	end)
+end
+
+-- One shared on/off-platform state for the camera, facing, stance/footwork and fade (Client/PlatformZone).
+require(Client:WaitForChild("PlatformZone")).start()
+
 local camera = CameraController.new(player)
 camera:start()
 
@@ -33,6 +46,17 @@ task.spawn(ServeInput.start)
 task.spawn(function()
 	local controller = ShotController.start(player)
 	if controller then
+		-- Forehand / backhand: the shot controller decides (screen side, locked while charging); the stance shows it.
+		StanceController.setStroke(controller.stroke)
+		MovementInput.setStrokeGetter(function()
+			return controller.stroke
+		end)
+		ServeInput.attachShotController(controller) -- the serve strike + the aim lock follow the shot input
+		controller.on(function(event: string, data: any)
+			if event == "stroke" then
+				StanceController.setStroke(data.stroke)
+			end
+		end)
 		ShotFeedback.start(player, controller, { impact = ImpactFx.start() })
 	end
 end)

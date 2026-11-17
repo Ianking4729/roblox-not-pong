@@ -20,7 +20,8 @@
 local BallPhysics = {}
 
 export type Config = {
-	radius: number,
+	radius: number, -- collision radius (table, net, floor and side contacts)
+	spinRadius: number?, -- lever arm for spin <-> speed coupling at contacts; nil = radius (lets a big ball keep real spin feel)
 	gravity: number, -- studs/s^2, positive = downward
 	restitution: number, -- table: fraction of normal speed kept
 	tableFriction: number?, -- table: Coulomb friction coefficient (0 = no spin coupling)
@@ -334,7 +335,7 @@ function BallPhysics.tick(state: State, config: Config, worldIn: any, events: { 
 			local e = if s then config.restitution else (config.floorRestitution or 0.5)
 			local mu = if s then (config.tableFriction or 0) else (config.floorFriction or 0.5)
 			local legacyFriction = s and config.tableFriction == nil and config.friction
-			v, w = BallPhysics.contact(v, w, Vector3.yAxis, e, mu, r, nil, if s then config.bounceSpinKick else nil)
+			v, w = BallPhysics.contact(v, w, Vector3.yAxis, e, mu, config.spinRadius or r, nil, if s then config.bounceSpinKick else nil)
 			if legacyFriction then
 				v = Vector3.new(v.X * legacyFriction, v.Y, v.Z * legacyFriction)
 			end
@@ -435,7 +436,7 @@ function BallPhysics.paddleHit(
 		return false
 	end
 	state.velocity, state.spin =
-		BallPhysics.contact(state.velocity, state.spin, normal.Unit, restitution, friction, config.radius, paddleVelocity)
+		BallPhysics.contact(state.velocity, state.spin, normal.Unit, restitution, friction, config.spinRadius or config.radius, paddleVelocity)
 	state.velocity = clampVec(state.velocity, config.maxSpeed)
 	state.spin = clampVec(state.spin, config.maxSpin)
 	state.resting = false

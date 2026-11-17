@@ -1,6 +1,6 @@
 # Current State
 
-_Last updated: 2026-11-14 (Gameplay refinement awaiting review: much stronger sidespin curves, faster shots, a low over-the-shoulder camera, and server-authoritative charge slow motion; see "Refinement" below. Before it: the Charge -> Curve -> Release core rework, Phase 4 feedback/movement, Phase 2-3 physics, rallies and shot controls)._
+_Last updated: 2026-11-16 (Pass 5c), latest change: **paddle v4 (flat-bottom rubbers exposing the wooden shoulder, narrow black edge band, plain colours, textures removed) and a genuine backhand face flip (the opposite rubber faces the player)**; see "Pass 5c" at the end (it supersedes Pass 5b's zones/textures and Pass 5's backhand pose). Before it: **paddle v3 from the build guide: same blade size and hit area, shorter flared handle, thicker 5-ply blade with sponge and separate rubber sheets, fine 1024 px rubber/wood/grip textures**; see "Pass 5b" at the end (it supersedes Pass 5's paddle description). Pass before it: **hybrid footwork (longer shuffles + crossover strides), a detailed larger paddle with independently styled zones and a matching contact radius, and the cursor-side paddle holding lean**; see "Pass 5" at the end (it supersedes the old shuffle clips/cadence settings and the old paddle template). Before it: **safe serve envelope (no serves escaping over the receiver's side line), Q serving posture, serve camera offset from court position, defensive dive lobs, bounded serve-solver cost, and a new concept-based table + large-square net**; see "Pass 4" at the end; it supersedes Pass 3's fixed serve-camera offset, its serve-stroke-from-cursor rule, its dive-return speed and its serve-solver budget, and the table asset description in "Uploaded assets". Before it, 2026-11-16: **balanced camera follow + lower serve view, natural toss with NO serve slow motion, contact-based legal serves, automatic dive returns (~90% legal), honest clean-shot preview, reversal flicker in the footwork**; see "Pass 3" at the end; it supersedes Pass 2's serve (apex slow motion, fixed-height timer, unforgiving fixed launch) and dive (manual contact) sections. Before it, 2026-11-15: **fluid athletic movement (stiffness/shake diagnosed and fixed), manual dive contact with F + backward dives and a 1.3 s get-up, and the player's manual toss-and-strike serve**; see "Pass 2: movement, manual dives, manual serve" at the end; it supersedes older sections on the dive (key E, automatic return), the serve (automatic strike, fixed spot) and the footwork/grounding. Before it the same day: **uploaded table + paddle, table enlarged x1.5, Edit-mode persistence fixed, new dive/get-up and shuffle footwork animations, wider camera and off-platform behaviour**; see "Uploaded assets, x1.5 table, persistence, dive/footwork animations, off-platform camera" near the end. Where this file's older sections disagree with that section (table size, ball size, editing rules, dive pose), that section wins. Earlier the same day: forehand/backhand by mouse screen side, and runtime checks of slow motion and stamina; see "Forehand / backhand + runtime checks" near the end. Before it, 2026-11-14: gameplay refinement awaiting review: much stronger sidespin curves, faster shots, a low over-the-shoulder camera, and server-authoritative charge slow motion; see "Refinement" below. Before it: the Charge -> Curve -> Release core rework, Phase 4 feedback/movement, Phase 2-3 physics, rallies and shot controls)._
 
 ## Architecture: static arena in Studio, dynamic gameplay at runtime
 
@@ -523,6 +523,550 @@ Working from the Mac folder: every edit appeared in Studio (server RallyService 
 5. Tuning: `Config.BotPlay` (reach, reaction, speed, spread, aim error), `Config.AutoReturn`, `Config.Serve`, `Config.BallPhysics`. To make the bot beatable, lower `BotPlay.Reach`/`Bot.WalkSpeed` or raise `AutoReturn.ReturnSpeed` and `TargetSpreadX`.
 6. Optional: `Lighting.Technology` = ShadowMap/Future for contact shadows. Save the place (Cmd+S) if you want your Studio changes kept; I did not save or publish.
 
+## Forehand / backhand + runtime checks (2026-11-15, Windows, awaiting your review)
+
+Project now at `F:\roblox games\roblox-not-pong` (Windows). **Script Sync verified both ways today:** all 40 scripts in Studio were byte-identical to disk (CRLF-normalised checksums); a probe comment written on disk appeared in Studio within 0.5 s, and removing it in Studio rewrote the disk file. Nothing saved or published.
+
+**Config drift:** the tables earlier in this file are partly out of date. Current values include `ChargeTime` 0.4, `MaxSpin` 90, `magnusSideGain` 2, `SidespinCompensation` 0.66, `BackspinCompensation` 0.88, `Movement.BoostDuration` 0.8, `StaminaRegenerationDuration` 3, `Avatar.WalkSpeed` 24, `ChargeFreeze.MaxDuration` 0.4. `Config.luau` is the truth.
+
+### Runtime checks of the unverified slow-motion and stamina paths (Studio Play, scripted through remotes / the debug bridge)
+- **Stamina:** boost 24 -> 54 walk speed; full bar empties in ~0.8 s, then speed returns to 24 and `exhausted` is set; a new boost request while exhausted is refused; releasing clears `exhausted`; refill to 100 takes ~3 s; a second boost works. **Discrepancy:** the 1 s regeneration delay counts from the moment stamina ran out, not from releasing Shift, so stamina also refills while Shift is still held after exhaustion (regen started 0.27 s after release in the test). Not changed.
+- **Slow motion:** a press 0.10 s before ideal contact slowed the rally (player walk speed 8.4 = 24 x 0.35, ball mode `slow`) and a release at the strike gave CLEAN; normal speed came back. Holding past the cap gave "held too long (slow motion ran out)" and normal speed. **Conflict found:** with `LeadTime` 0.45, `TimeScale` 0.35 and `MaxDuration` 0.4, a press more than ~0.14 s (0.4 x 0.35) before ideal enters slow motion but contact is then further away in real time than the cap allows (press at 0.29 s -> 0.73-0.85 s of real time to contact vs 0.35-0.4 s left), so it always ends as an early miss or a run-out. Either `LeadTime` <= `MaxDuration * TimeScale` or `MaxDuration` >= `LeadTime / TimeScale` (~1.3 s) is needed. **Resolved in the next section: `LeadTime` 0.13.**
+- Not verified: a normal-speed press before `LeadTime` under the current code (the harness did not get a window in time), real keys, real latency.
+
+### Forehand / backhand (implemented)
+- **Rule:** mouse on the LEFT half of the screen = backhand, RIGHT half = forehand, from the screen X coordinate only (`ShotController.pointerStroke`, viewport centre, dead zone `ShotControl.StrokeDeadZone` 0.03 of the width keeps the current stroke near the middle).
+- **Locking:** follows the pointer while IDLE; locks when charging actually starts (a queued press locks the pointer side at that later moment); stays locked through SWING_RELEASED, CONTACT_RESOLVED and RECOVERY; every return to IDLE (end of recovery, cancel, focus loss, point reset, respawn, release with no ball) unlocks and re-reads the pointer at once. Drag accumulation, spin, power and the arrow are untouched.
+- **Pose:** `StancePose` builds one upper-body ready track per stroke (`Config.Stance.Backhand`) and the stance controller cross-fades them (`StrokeBlendTime` 0.12 s); the same tracks are reused, only one plays at full weight, the legs/grounding track is unchanged, the paddle stays on its `PaddleGrip` Motor6D (no teleport). The backhand angles were MEASURED on the avatar (on this rig shoulder Y, not Z, brings the arm across): blade 3.5 studs left / 5.3 up / 6.5 forward of the root vs the forehand's 6.2 right / 6.7 up / 7.4 forward. `StanceController` remembers the requested stroke so it survives the ~3 s stance measurement and respawns (the new character starts directly in it).
+- **Swing:** `StancePose.playSwing(character, strength, stroke)`; backhand swing (`Config.Swing.Backhand`) measured blade path: back (-3.8 right, 2.8 fwd) -> strike (3.9 right, 10.5 fwd) -> follow (7.4 right, 9.5 fwd). It starts and ends at the locked stroke's ready pose.
+- **Server:** `ChargeStart` now carries `stroke`; RallyService stores it per press (only "Forehand"/"Backhand", cleared with the press, at point reset and on cancel) and reports it in the swing reply and the event text ("You hit (backhand clean, ...)"). (Reach was made stroke-dependent in the next section.)
+- **Reach anchor vs backhand (explained, not changed):** gameplay reach is a 9-stud circle around a point 4 studs right / 3 forward of the root (`ShotInput.anchor`), so it covers roughly x = -5..+13 relative to the body whatever the pose. A backhand pose shows the blade ~3.5 left, so a ball 6 studs to the left is unreachable next to a visible backhand paddle, while a ball 12 studs right is hittable while posed for a backhand. Stance-specific reach is an open decision.
+
+**Tests (Studio Play, scripted via `Player.NotPongShotDebug`: new `pointer`, `cancel`, `blur` commands; not real mouse):** idle pointer 0.2/0.49/0.52/0.8/0.51/0.45 -> B/B/B/F/F/B (dead zone works), exactly one upper track at weight 1 after each switch; live rally: backhand charge stayed backhand while the pointer crossed to 0.92 with -90 sidespin from the drag, through release, CLEAN verdict and recovery, then unlocked to forehand; cancel, focus loss, point reset (held through the point) and respawn all returned to IDLE unlocked and followed the pointer; queued press between points locked the pointer side at the moment charging began; after respawn only the backhand pose ever appeared; both camera orientations (player on the bot's half with the mirrored camera): pointer-left = blade on the screen-left of the body; three live returns forehand/backhand/forehand all CLEAN with the right stroke in the server log; console clean. Screenshot: backhand blade reads front-left (seen through the 0.6-faded head).
+**Not verified:** a physical mouse/trackpad, feel, how the poses look from other angles, paddle clipping during the backhand swing, real latency.
+
+### Measured for the open smash question
+Bot returns (200 solved shots with the bot's own rules) peak only **3.5-8.2 studs above the table** after bouncing on the player's half (median 5.8); they cross the player's end line 3.7-5.6 above it. The reach band tops out at 20 above the floor = 10.3 above the table.
+
+### Files
+`src/shared/Shared/Config.luau` (Stance.Backhand, StrokeBlendTime, Swing.Backhand, ShotControl.StrokeDeadZone), `src/shared/Shared/StancePose.luau` (stroke poses, setStroke, backhand swing, start in a stroke), `src/client/Client/StanceController.luau` (setStroke/getStroke), `src/client/Client/ShotController.luau` (stroke selection/lock, stroke on ChargeStart and release, debug commands), `src/client/Client/ShotFeedback.luau` (swing uses the stroke), `src/client/Client/Main.local.luau` (wiring), `src/server/Server/RallyService.luau` (press stroke record/report).
+
+### Manual playtest checklist (stroke)
+1. Idle: move the mouse across the screen centre: the arm switches between forehand (paddle right) and backhand (paddle across, front-left) with a short blend; resting near the centre does not flicker.
+2. Hold left-click on the left half, drag right across the centre for spin: the backhand stays; release: a backhand swing; the next stroke follows the mouse after recovery.
+3. Alt-tab, let a point end, or reset the character while holding: the pose follows the mouse again.
+4. Walk round to the bot's half: left of the screen is still backhand.
+
+## Stroke reach, timing errors, smash, dive, slow-motion fix (2026-11-15, awaiting your review)
+
+Decisions confirmed in chat: reach follows the stroke (mirrored anchor); forgiving ordinary returns with risk in aggressive/stretched shots; smash thresholds as proposed; high balls from bot pressure pop-ups + a small random rate; slow-motion `LeadTime` 0.13; dive by movement input with an automatic weak return, costlier preset (50 stamina, 1.0 s recovery).
+
+### What changed
+- **Reach follows the stroke.** `ShotInput.anchor(root, settings, stroke)`: backhand anchor = `ShotControl.BackhandAnchorRight` (-4, mirrored), same 9-stud radius. Server: the stroke recorded with the press (`ChargeStart.stroke`) is used for the contact window, slow-motion eligibility and stretch. Client: the window/timing bar/arrow use the current stroke (locked while charging); a stroke change while idle clears the window so it is recomputed from the other anchor.
+- **Deterministic timing error** (`ShotLaunch.compute` opts `timing`, `stretch`, `stroke`; `ShotInput.timingValue`). After the calibration the launch is turned by `yaw = t * risk * TimingYawDegrees` (early = across the body: forehand to the left, backhand to the right) and `pitch = -t * risk * TimingPitchDegrees` (early = higher/long, late = lower/net), where `t` = release offset in half clean-windows (-1..1 clean, up to +/-2 at the weak band's edge) and `risk = ErrorBase 0.2 + ErrorPowerWeight 0.8 * ramp(power 0.5..1) + ErrorStretchWeight 0.8 * ramp(stretch 0.6..1)`. The old random +/-4 stud weak error is off (`WeakAimError` 0); weak contacts keep x0.8 speed / x0.4 spin. Nothing is steered after contact.
+  - Offline sweep (60 contacts x spins per cell, landed % / mean landing shift): power 0.3-0.6 near the body: 100% at every timing (shift <= 2.3 studs at the weak edge); power 1.0: 89-98% at the clean edge, 68-82% at the weak edge; power 1.0 + stretch 0.9: 77-96% at the clean edge, 30-36% at the weak edge.
+- **Arrow = "release now".** `ShotFeedback` predicts with the ball's position at this moment inside the window (incoming flight cached once per snapshot), the timing error of this moment, the stretch, the weak penalty and the smash rule, so the arrow sweeps through the error as the ball arrives and is straightest at the ideal moment. Recompute interval 0.02 s (`Feedback.Arrow.RecomputeInterval`), prediction cost measured 0.2-0.3 ms.
+- **Smash.** `ShotInput.smashEligible`: ball centre >= `SmashMinHeight` 7.5 above the table, <= `SmashMaxBehindEndLine` 6 behind the player's end line, power >= `SmashMinPower` 0.75; with a clean or weak contact the server plays `ShotLaunch` opts.smash: `SmashSpeed` 135, `SmashDepth` 0.85, spin x0.5, risk x3 of full power. Offline: lands 92-100% within +/-1/4 of the clean window (~+/-30 ms), 56-93% at +/-1/2, 13-26% at the edge. Arrow gold (`ShotControl.SmashColor`) with "SMASH" (red "SMASH OUT/NET" when it would miss); release plays `StancePose.playSwing(..., "Smash")` (`Config.Swing.Smash`, hand-set, not measured).
+- **Bot pop-ups** (`Striker:shot(from, rng, state)`, `Config.BotPlay.Popup*`/`Pressure*`): pressure = max(edge-of-reach, incoming speed 75..110, sidespin /80); lob chance = 0.05 + 0.3 x pressure; the lob is 30 +/- 2 studs/s, topspin 60, to 0.65 depth (offline: bounces 10.1-12.4 above the table; live tests saw 8.0-10.6 depending on the bot's contact height). Event text "Bot pops up a high ball: smash it!".
+- **Contact window horizon 1.5 -> 3 s** (`ShotInput.contactWindow`): the server predicts from the bot's hit and a lob takes longer than 1.5 s to come back into reach; before this every lob was "ball never in reach" on the server while the client showed a window (found in testing).
+- **Slow motion:** `ChargeFreeze.LeadTime` 0.45 -> 0.13 (<= MaxDuration x TimeScale).
+- **Dive** (`Config.Movement.Dive*`, key E). Client (`MovementInput`): direction = `Humanoid.MoveDirection`, or the locked stroke's side when no keys are held; sends `DiveRequest(dir)`. Server (`MovementService.requestDive`): character alive/placed, not diving, 1.5 s cooldown, stamina >= 50 (else the player's `NotPongDiveRefused` counter bumps -> HUD flashes NO STAMINA), then RallyService's gate (live rally, one dive per incoming ball; cancels the charge and any slow motion). Lunge = a server-created horizontal `LinearVelocity` for 0.35 s covering 10 studs (not affected by Shift boost; physics, so the table guard blocks it), WalkSpeed 0 through the lunge and the 1.0 s recovery, character attribute `NotPongDive` = lunge / recover / "". No boost drain or regeneration during a dive. RallyService `tryDiveReturn` (per physics tick during the lunge): referee/one-swing/cooldown rules, root within `DivePositionTolerance` 6 of where the lunge can be (anti-teleport), ball in reach of `root + dir*3` with radius 9 + 6, falling or past the end line -> `ShotLaunch` opts.dive: 40 studs/s, spinless, depth 0.55, stretch error up to 5 deg toward the dive side. Client: charging is refused while diving; a dive cancels a charge; dive pose `StancePose.playDive` (Action3); stamina bar has a dive-cost tick.
+
+### Tests (Studio Play, scripted through remotes and `Player.NotPongShotDebug`/`NotPongArrowDebug`; not real keys/mouse)
+- Reach: ball 6 studs LEFT -> backhand CLEAN, forehand "ball never in reach"; ball 12 studs RIGHT -> forehand CLEAN, backhand "never in reach". Client window agreed with the server in all four.
+- Timing error: forehand early (-80 ms) yaw +3.8 deg / pitch +0.8, late (+83 ms) yaw -4.0 / -0.8, backhand ideal ~0; the arrow's own yaw matches the formula for its timing exactly (e.g. -0.061 s -> +2.92 deg) and the real bounce was 0.8-2.9 studs from the arrow tip. **The arrow lagged the server by up to ~66 ms in these tests because Studio in the background renders at 15 fps (RenderStepped 15/s, Heartbeat 60/s); a focused window renders every frame.**
+- Smash (bot forced to lob for this test only, then restored to 0.05): on time -> "forehand SMASH clean", contact 7.8 above the table, landed; early (-67 ms) -> smash with yaw +9.7, landed; a natural pop-up during the final regression was smashed from slow motion (clean, power 92%).
+- Dive: refused between points (stamina unchanged); in a rally a charge was cancelled ("dive"), lunge 0.33 s / 9.6 studs, WalkSpeed 0 during, recovery ~1.0 s, dive pose played; refused at 38 stamina with the NO STAMINA counter bumped; ball passing 14 studs to the left (out of normal reach) -> "You dived and returned it (stretch 74%)", landed on the bot's half; diving at the table from 5.2 studs off its edge stopped 5.0 off it.
+- Slow motion: press 0.112 s before ideal -> slowed (WalkSpeed 8.4), clean at the strike, power charged in real time.
+- Regression: ordinary returns at power 0.62-0.71 clean and landed (yaw <= 0.5 deg); serving, scoring, stroke reporting; console clean throughout.
+
+### Not verified
+- Physical mouse/keyboard (E, Shift, drag), feel, latency; how the smash swing and dive pose LOOK (hand-set keyframes; only the forehand/backhand poses were measured); the one-dive-per-ball refusal (source only; the 1.5 s cooldown makes it rare); the anti-teleport tolerance path; the pressure pop-up rate in real rallies; the arrow's sweep readability at 60 fps.
+
+### Known issues / tuning notes
+- Live lobs peaked 8.0-10.6 above the table (offline 10.1-12.4): the smashable stretch of the fall is short when the bot hits low. Lower `PopupSpeed` or raise `PopupDepth` for higher lobs, or lower `SmashMinHeight`.
+- Stamina regeneration resumes 1 s after the dive STARTS, i.e. right after the 1.35 s dive ends; and (unchanged) after boost exhaustion it counts from exhaustion, not from releasing Shift.
+- The arrow cannot know your release frame: at 60 fps its "release now" prediction is at most a frame or two old.
+- `ShowInputDebug` is still true in Config (its overlay code is commented out in ShotFeedback).
+
+### Files (this pass)
+`src/shared/Shared/Config.luau`, `ShotInput.luau` (stroke anchor, timingValue, smashEligible, 3 s horizon), `ShotLaunch.luau` (risk, timing/stretch/smash/dive launches), `StancePose.luau` (smash swing, dive pose); `src/server/Server/RallyService.luau` (stroke reach, playerLaunch, dive gate + return, pop-up event), `Striker.luau` (pressure, lob), `MovementService.luau` (dive); `src/client/Client/ShotController.luau` (stroke anchor, dive lockout/cancel, dive result), `ShotFeedback.luau` (release-now arrow, smash, cached incoming flight), `TrajectoryArrow.luau` (smash look), `MovementInput.luau` (E, NO STAMINA, dive pose), `Main.local.luau` (wiring).
+
+### Manual playtest checklist
+1. Rally normally at medium power: almost everything lands; watch the arrow swing slightly as the ball arrives and straighten at the green zone.
+2. Full power: release a little early/late and watch shots go across/long or wide/into the net; the arrow shows it before you release.
+3. Stand so the ball comes to your left: with the mouse on the right (forehand) it is out of reach; switch the mouse left (backhand) and it is hittable.
+4. Hit hard, wide, curving shots until the bot pops up ("smash it!"): hold to >= 75% power, the arrow turns gold SMASH; release on time.
+5. Let a ball go wide, press E toward it (with A/D held, or none: your stroke side): you lunge, the ball comes back as a soft lob if you reached it; you are stuck ~1 s after. Try E at under 50% stamina: NO STAMINA.
+6. Press very late on an incoming ball: slow motion; release at the strike.
+
+## Uploaded assets, x1.5 table, persistence, dive/footwork animations, off-platform camera (2026-11-15, awaiting your review)
+
+Decisions confirmed in chat: table **x1.5 of the old plan keeping the wide shape** (47.27 long x 34.5 wide), height kept at 8.74; ball enlarged in proportion (1.5 studs, gameplay = visual); the incomplete import fixed by **re-exporting from Blender and importing in Studio** (done by you); shot speeds **x1.15** (partial, flights take longer than before); dive/footwork animated for **standard R15**.
+
+### 1. The assets (what is where now)
+
+| Object | Role | Edit it? |
+|---|---|---|
+| `NotPongArena/Table/Visual/TableAsset` | **The visible table**: your uploaded meshes. `Top`, `Lines` (from your first import; lines are a separate layer so they can have their own colour), `Legs`, `NetPart1-4`, `NetBorder`, `NetHolder`, `Clamp` (from `assets/table/NotPongTable.fbx`). Anchored, no collision/query/touch | **Appearance: freely** (colour, material, MaterialVariant, textures, decals, SurfaceAppearance, Highlights, new child parts). Size/position: see "Editing workflow" |
+| `NotPongArena/Table/Collision/TableTop` | Invisible gameplay table block (unchanged role) | No (Config-enforced) |
+| `NotPongArena/Net/*` | **Collision only now** (Transparency 1: the asset's net is the visible one). Blocks characters; the ball uses `TableWorld` | No |
+| `NotPongArena/PaddleTemplate` | **The paddle**: your uploaded paddle (Handle, Red, Blue unions), scaled x2.51 (blade 3.2 studs, the placeholder's visual size). `Handle/Grip` attachment = where the fist closes (+Y toward the blade tip, blade faces +/-Z, red face toward the table in the ready stance). At Play it moves to ServerStorage and `PaddleFactory` clones it onto the player and the bot (named `Paddle`, welded, unanchored, massless, no collision). Visible in Edit mode next to the player spawn | **Freely**: appearance, scale (Scale tool / `Model:ScaleTo`), extra parts. Move/rotate `Grip` to change how it is held |
+| `NotPongArena/BallTemplate/Ball/BallVisual` | The visible ball, now **1.5 studs = the gameplay ball** | Appearance freely; size is gameplay (Config) |
+| `ServerStorage/NotPongBackup_2026-11-15` | Reversible copies: `PrimitiveVisuals` (the old table surface, lines and legs), `UploadedOriginals` (your Scene, NotPongTable and Paddle exactly as imported, and the old 1.0-stud BallVisual). README inside | Delete when you are happy |
+
+The uploaded table came in incomplete (only 1 of 4 leg quarters, 1 of 4 net quarters, 1 of 2 net holders, no materials): the Blender file's Mirror/Array modifiers had not been applied on export. `assets/table/NotPongTable.fbx` was exported from `tableTennisTable.blend` with modifiers applied (the .blend was not modified or saved); the net is split into 4 quarters because the full net is 49,600 triangles (over the per-mesh limit). The net mesh is one-sided, so `DoubleSided` is on for the net parts. Colours/materials were set once from the Blender materials (navy top, white lines/net, dark metal frame).
+
+### 2. Why Edit-mode changes did not stick, and the fix
+Measured (representative edits, then Play):
+- **The uploaded paddle and table were never used.** `PaddleFactory` built a primitive paddle (two Parts) for every character; `Workspace.Paddle` and `Workspace.Scene` were just sitting in Workspace, so editing them changed nothing in the game.
+- **One gameplay mismatch reset unrelated visuals.** When any gameplay part (TableTop, NetMesh, Platform) differed from Config, `ArenaBuilder.load()` ran the full `syncGeometry()`, which re-enforced Size/CFrame of EVERY static part, including the visual legs/lines and the BallVisual (your 1.0-stud ball went back to 0.5). Reproduced: resizing TableTop also reset a resized leg and the ball.
+- Plain appearance edits on the arena did persist (verified), so this was not Play overwriting cosmetics.
+
+Fix:
+- `PaddleFactory.create()` clones `PaddleTemplate` (falls back to the primitive paddle with a warning only if the template is missing). The template's look, scale and part layout are kept exactly.
+- `ArenaBuilder.syncGeometry(folder, gameplayOnly)`: Play passes `gameplayOnly`, so only gameplay geometry (collision table, net collision, platform, ball sizes) is corrected; visual parts, the table asset and spawn markers are never touched. With a `TableAsset` present the primitive visuals are neither created nor updated.
+- The visible table may not disagree with the simulation: at Play, only the asset's **structural** parts (Top, Lines, NetPart1-4, NetBorder; attribute `FitStructural`) are compared with Config and, if they drifted, re-fitted **in memory for that session with a warning** (Size/CFrame only; appearance untouched). Cosmetic geometry (Legs, NetHolder, Clamp) is never touched at Play, so resizing them sticks.
+
+### Editing workflow
+- **Appearance of anything** (table asset, paddle template, ball visual): edit in Studio and save; nothing at Play rewrites it.
+- **Legs / net holders / clamp size or position**: edit directly (cosmetic geometry).
+- **Paddle**: edit `PaddleTemplate` (look, scale) and its `Handle/Grip` attachment (grip).
+- **Table size (structural)**: change `Config.Presentation` (`ArenaScale` = length/net, `TableWidthStuds`, `TableHeightStuds`, `BallDiameterStuds`), then in the Command Bar (Edit mode):
+  `local AB = require(game.ServerScriptService.Server.ArenaBuilder); AB.syncGeometry(); AB.fitTableAsset()` and save. `syncGeometry` updates the collision table, net, platform and ball; `fitTableAsset` rescales every fitted asset part from its recorded native size (idempotent; attributes `Native*` on the model and `FitZone`/`FitStructural`/`FitSource*` on the parts). Move the spawn markers if the table length changed. Do not resize the Top/Lines/net parts by hand: Play would put them back (with a warning).
+- Adding your own parts to `TableAsset` is fine: parts without `FitZone` are never moved by code.
+
+### 3. Scale (Config.Presentation)
+| Value | Old | New |
+|---|---|---|
+| Table (L x W x H) | 31.51 x 23 x 8.74 | **47.27 x 34.5 x 8.74** (`ArenaScale` 1.725, `TableWidthStuds` 34.5, `TableHeightStuds` 8.74) |
+| Net height / length | 1.754 / 26.51 | **2.63 / 39.76** |
+| Ball (gameplay / visual) | 0.4 / 1.0 | **1.5 / 1.5** |
+| Platform | 55 x 95.51 | 66.5 x 111.27 |
+| Spawns | z 85.75 / 34.24 | z 93.63 / 26.37 (10 behind each end line, as before) |
+
+Not multiplied blindly: height, gravity, avatar, reach (9 + dive 6), timing windows, smash height unchanged.
+- **Ball radius vs spin**: collisions use the 0.75 radius, but the bounce's spin <-> speed coupling uses the real ball's lever arm (`BallPhysics.spinRadius` 0.2); otherwise every bounce would kick spin 3.75x harder.
+- **Speeds x1.15**: player 55-115 (was 48-100), smash 155, bot 71 +/- 7, serve 80 (29-126), `magnusSideSpeedRef` 86. Lateral spreads x1.5 (bot spread 7.5, aim error 0.9, serve spread 4.5, second bounce 13.5, lateral margin 3.75); net clearance 1.2.
+- **Not x1.15, because measured necessary**: bot lob `PopupSpeed` 52 +/- 3 to depth 0.6 (at 34.5 the solver found **0/120** lobs: with drag a slow lob cannot carry the longer table; at 52: ~100% solved, bouncing 11-16 above the table); `DiveReturnSpeed` 55 (46 solved 9/15 dive returns from contacts wide of the table; 55: 15/15).
+- **Camera**: `Camera.DistanceMultiplier` 1.25 pulls the camera back along its own line of sight (same angle and composition, wider view; FOV unchanged).
+
+### 4. Dive + get-up and footwork animations (made with /animate)
+`/animate` (the fwjelaa kit) was used with the Blender MCP: recipe `anims/_notpong.py` in the kit (`C:\Users\Yan\.claude\skills\animate\pack`), clips `NP_DiveRight`, `NP_DiveLeft`, `NP_ShuffleRight/Left/Forward/Back`, built on the kit's block R15 rig with its IK, exported, converted by `tools/anim_to_luau.py` into `src/shared/Shared/NotPongAnimData.luau` (generated; do not edit) and built into KeyframeSequences at runtime by `Shared/NotPongAnims` (registered like the generated stance; **nothing uploaded or published**). Built in a temporary scene of your open Blender file, removed afterwards; your .blend was not saved.
+- **Dive (one clip per side, 1.35 s = the 0.35 s lunge + the 1.0 s recovery, Action4, every joint):** push-off (4 f) -> airborne reach with the paddle stretched beyond the head (10, marker Reach) -> floor landing lying on the dive side (19, Land) -> squash (21, Recover = start of the server's recovery) -> still down while the free hand plants (30) -> brace (36) -> kneel (51 = 0.5 s into the recovery) -> rising (66) -> ready (81). The paddle stays in the right hand: a left dive reaches across (backhand side). The clip never moves the HumanoidRootPart (the server's LinearVelocity does), so no double root motion.
+- **Sync with gameplay** (`MovementInput` watcher -> `StancePose.dive`): "lunge" starts it, "recover" re-syncs to the get-up, "" lets it finish (blends out over its last 0.18 s into the live stance) or blends it out if the dive was cut short (respawn). HipHeight is held during the whole dive (the stance grounding pauses); jumping is disabled during the dive and re-enabled after; charging stays refused (existing). Slow motion scales the clip.
+- **Per-avatar fit** (`NotPongAnims.rootOffset`): every LowerTorso translation is shifted down by (root height / scale - 3) units. The stance measures each avatar's own hip pose, so its root sits higher than the block rig's. Exact for block-proportioned avatars; your test avatar is the block rig x3.37. (A multiplicative fit and a per-frame HipHeight servo were tried first and failed: the body floated 2-3 studs, then legs went through the floor.)
+- **Ready stance**: feet wider than the hips (`Stance.LegSpreadDegrees` 10), as in your reference.
+- **Shuffle footwork** (players): moving on the platform up to `Stance.ShuffleMaxSpeed` 32 studs/s, the legs shuffle instead of walking: the foot nearest the movement direction steps first, the other follows, never crossing. The four directions are blended by the move direction in the body's frame and the playback speed follows the ground speed. Faster than that (Shift boost) the regular run shows. While shuffling, the grounding uses a short window (one foot is always planted).
+- The old procedural dive lean (`Config.DivePose` angles) is replaced; `Config.DivePose` now only holds the blend times.
+
+### 5. Camera distance and off the platform
+- New `Client/PlatformZone`: one on/off-platform state from the real `Platform` part with the fade's margins (0.5 in / 1.5 out) plus `PlatformZone.DwellTime` 0.2 s, shared by the camera, facing, stance and fade (all switch together; no edge flicker).
+- **Off**: the camera glides for 0.4 s to a follow pose 28 studs behind the head along the current view (`Camera.HandoffTime`/`OffPlatformDistance`/`OffPlatformPitch`), then Roblox's default camera takes over from exactly that pose (zoom pinned to that distance for a moment, then normal zoom/orbit). `AutoRotate` on and the facing constraint removed (the avatar faces its movement). The stance, shuffle and swing-base tracks stop and the avatar's own HipHeight returns, so the default idle/walk/run/jump show. The fade turns off (unchanged behaviour).
+- **Back on**: the table camera starts from the current view and eases in (`Camera.ReturnSmoothing` 4), the facing constraint and the stance/footwork fade back in (0.25 s), and the fade returns.
+
+### Tests (Studio Play; scripted through remotes, `Player.NotPongShotDebug`, `Humanoid:MoveTo` and teleports in the test harness only; not real keys/mouse)
+- **Assets active / no duplicates**: one TableAsset (10 parts), one BallVisual, two paddles (player + bot), both clones of the template; template moved to ServerStorage at Play and back in the arena after Stop. Console clean.
+- **Geometry**: TableTop 34.5 x 8.74 x 47.27, platform 66.5 x 111.27, net collision 39.76 x 2.63, ball 1.5/1.5; `validate` and `validateTableAsset` 0 problems; visual top surface at 9.74 = gameplay surface; net border top 2.63 above it.
+- **Persistence, 2 Play/Stop cycles, on the new assets**: table top colour + material + a Texture, legs colour + 10% resize, paddle template colour + a Highlight child, ball colour + Neon all present on server and client in both cycles (the paddle edit appears on the character's clone); a hand-resized Top was re-fitted in memory with a warning while its colour/material/texture stayed. Test edits reverted afterwards (validators 0 problems).
+- **Offline shot sweep (5,300 launches on the new table)**: clean timing: power 0.5 lands 99%, power 1.0 96%, power 0 75% (fails are zero-power full-backspin shots: the solver cannot calibrate them and they fall short); timing extremes 81-89%; smash on time 100%, +/-1 half-window 33-67%; bot returns 120/120, bouncing 6.2-15.1 above the table (median 9.9); lobs ~100% solved at the new speed.
+- **Live rallies**: a 19-hit rally (13 forehand + 6 backhand, all clean, with spin drags; the bot returned every shot on the wider table, one pop-up); a 13-hit full-power rally including **a smash of a bot pop-up** ("forehand SMASH clean") that the bot returned; player and bot serves; scoring and points.
+- **Dive**: both sides played in sync with the server phases (lunge -> recover at 0.35 s -> stance at ~1.45 s), body moved 10.6 studs, jump disabled during and restored after. After the fit, the body lies on the floor at landing (torso 4.8 studs above the floor on its side). Screenshots from the game camera: lying on the floor beside the table after a right dive; kneeling at 0.82 s of a left dive.
+- **Footwork**: moving right / left / diagonal / back blends the matching shuffle (e.g. right 0.53 + forward 0.02 while still blending in); feet never crossed (closest 3.95 studs); on a 32-stud side-step the lowest foot sat at a median 0.09 above the floor.
+- **Off-platform**: off -> camera Custom, AutoRotate on, facing removed, avatar turned to its movement (+Z), only default animations playing, HipHeight 6.75 (natural), fade 0; back on -> everything restored. Camera hand-off: largest single-frame step 6.6 studs (was a 24.9-stud snap before the glide) in this background Studio window running at ~15 fps (about 1.6 per frame at 60 fps); return 3.3.
+
+### Not verified
+- Anything with your real mouse/keyboard, and the feel.
+- How the dive and shuffle look to the eye at full frame rate. The dive was checked from two screenshots and key-pose renders; the shuffle was not screenshot in motion.
+- Avatars that are not block-proportioned (the per-avatar fit is exact only for block proportions).
+- Network latency; another player; the bot's own dive (it has none).
+
+### Known issues
+- **Dive clip clipping** (kit checks): arms pass 0.25-0.5 studs (block-rig units; x3.37 on your avatar) into the head or chest during the overhead reach and the floor catch. In the left dive the paddle arm sinks up to 0.4 units into the floor while lying on it (the rig's shoulder joint touches the floor; the body may rise only 0.3 units onto the arm). The two legs overlap 0.25 in the airborne frames.
+- **Shuffle start**: during the first ~0.5 s of a move (blending in) the feet float ~0.3 studs; settled shuffling is within ~0.1.
+- **"Rally timed out" once** in ~60 rally shots: after a full-power rally, 10 s passed with no hit and no floor contact (the ball came to rest without being scored). Cause not identified.
+- Zero-power full-backspin shots fall short (75% landing at power 0). This may predate the resize; it was not compared with the old table.
+- Flights are ~30% longer than before (x1.5 table, x1.15 speeds), as chosen; raise the speeds further if rallies feel slow.
+- The camera clipping at the near-left table corner (old note) was not re-checked.
+
+### Files (this pass)
+- Shared: `Config.luau` (Presentation, scale-driven values, camera, PlatformZone, Stance footwork, DivePose, Names), `BallPhysics.luau` (`spinRadius`), `StancePose.luau` (wider legs, shuffle, dive clip, off-platform suspend, time scale), **new** `NotPongAnims.luau`, **new (generated)** `NotPongAnimData.luau`.
+- Server: `ArenaBuilder.luau` (gameplay-only sync, table-asset fit/validate, paddle template parking), `PaddleFactory.luau` (template clone, Grip attachment).
+- Client: **new** `PlatformZone.luau`, `CameraController.luau` (distance, hand-off, return), `FacingController.luau`, `CharacterFade.luau`, `StanceController.luau`, `MovementInput.luau` (dive clip sync, jump lock), `ShotController.luau` (slow-motion time scale), `Main.local.luau`.
+- **New** `tools/anim_to_luau.py`, `assets/table/NotPongTable.fbx`.
+- Studio (unsaved until you save the place): `TableAsset`, `PaddleTemplate`, resized arena, moved spawns, backup folder.
+- /animate kit: `anims/_notpong.py` and `anims/NP_*.py`.
+
+### Manual playtest checklist
+1. **Save the place first** (the new assets live in the Edit data model).
+2. Look at the table, net, paddle and ball from the game camera; recolour the table top and the paddle in Edit mode, press Play twice: the changes stay.
+3. Rally: is the wider view comfortable? Do rallies feel too slow (flights are ~30% longer)?
+4. Move left/right/forward/back in a rally: the feet should side-step without crossing; Shift shows the run.
+5. Dive (E) both ways: commit, land on the floor, get up in about 1 s; is the paddle visible at the reach?
+6. Walk off the platform: the camera becomes the normal follow camera and you walk/run/jump normally; walk back: the table camera, stance and footwork return without a snap.
+
+
+## Pass 2: movement, manual dives, manual serve (2026-11-15, awaiting your review)
+
+Requested in chat: fluid athletic movement (diagnose the robotic on-platform movement and the shaky off-platform walk first), dives on **F** with manual contact (no automatic return), a **backward dive** (S + F), recovery **1.3 s**, and a **player-controlled toss-and-strike serve** (ball in the free hand, Space to toss, cursor aim before charging, apex slow motion, real faults). Bot serving, scoring, rotation, the uploaded assets, persistence and the camera are unchanged.
+
+### 1. Diagnosis (measured in Studio on your avatar before any change)
+| Symptom | Cause found | Fix |
+|---|---|---|
+| Off-platform walk shaky / choppy | Roblox's **animation retargeting** (`Workspace.Retargeting = Default`) scaled the default walk/idle translations to the avatar's HipHeight **on top of** `Model:ScaleTo`'s own scaling: on the 3.37x avatar the hips bobbed **2.55 studs** per stride with **0.93-stud jumps in one frame** (the asset itself moves 0.28 units). The root itself was perfectly steady, so it was not physics or the camera | `Config.Animation.Retargeting = Disabled`, set by the server and every client at start. Measured after: bob **0.86**, max **0.31** per frame (the same proportion as an unscaled avatar) |
+| On-platform movement robotic | (a) the leg tracks' weights dipped to **~0.75** at every start/stop/reversal, so the (over-scaled) default walk leaked into the legs; (b) the per-frame HipHeight grounding saw those feet and **popped the body up ~0.47 studs** each start; (c) the shuffle clips keyed the **whole body** (arms at rest), averaging the paddle arm and the lean down by half while moving (shoulder **45 -> 22 deg**, lean **12 -> 6**); (d) a single frozen upper-body pose | New footwork controller (below): leg weights always sum to 1, HipHeight never touched, legs-only clips, additive upper-body layer |
+
+### 2. Movement (Shared/StancePose.start, rewritten)
+- **Legs** = one locomotion layer whose weights always sum to 1: `NP_Ready` (standing) + 4 shuffles + 4 Shift runs, blended by speed (shuffle below 30 studs/s, run above 44, Shift boost is 54) and by the travel direction in the body's frame. One shared cycle clock drives every footwork track (no track restarts on input changes); a move started after standing still begins on the lead foot (the foot nearest the direction). Cadence = real speed / the blended clips' authored travel speed (so no extra slow-motion factor is needed: slow motion lowers the real speed).
+- **HipHeight is never changed** (on or off the platform). The clips fit the avatar's own HipHeight with no vertical shift (`NotPongAnims.rootOffset` is now 0; the old shift was for the old raised HipHeight and sank the bot's feet 0.69 studs).
+- **Upper body** = the stroke's ready pose (Config.Stance) + an **additive layer** written after the Animator each frame (`RunService.PreSimulation`): waist and neck counter-rotate against the hips' yaw (`Stance.Layer.WaistCounter` 0.55, `NeckCounter` 0.35: on a sideways run the hips turn 25 deg toward travel while the head stays ~2.5 deg off play), slow breathing, free arm balancing. Never touches the legs, so planted feet stay planted.
+- **Clips** (`/animate`, Blender MCP; recipe `anims/_notpong.py` in the kit, legs + hips only): `NP_Ready` (feet wider than shoulders at +-1.3, knees 50, pelvis tipped forward, a slow 2 s weight shift with feet IK-planted), `NP_ShuffleRight/Left/Forward/Back` (base +-1.2: feet come closer between steps, never cross, hips open 4 deg toward the stepping foot), `NP_RunRight/Left` (a low side gallop with the hips turned 25 deg toward travel; feet 1.56-3.41 apart, never crossing), `NP_RunForward`, `NP_RunBack` (backpedal). All "CHECKS: all clear".
+- Settings: `Config.Stance.Locomotion` (thresholds, blend rates, authored clip speeds, cadence clamps), `Config.Stance.Layer`.
+- The bot uses the same footwork (its own walk cycle is no longer used).
+
+### 3. Dives (F, manual contact, backward, 1.3 s) — contact SUPERSEDED by Pass 3 (automatic return); key, directions, recovery and animations still apply
+- **Key F** for every direction (E is no longer bound). Direction relative to the court-facing direction (the avatar faces the table; WASD is camera-relative with the camera behind you): **S alone or S+A / S+D = backward dive** along the held direction (back diagonals keep their sideways component and play the backward animation); A / D = that side; no keys or W alone = toward the locked stroke's side. `ShotInput.diveKind` (backward share >= `DiveBackwardThreshold` 0.35) classifies it the same way on every machine.
+- **A dive never hits.** The automatic fixed-speed dive return is removed (RallyService `tryDiveReturn`, ShotLaunch's dive branch, `DiveReturn*` settings). The charge, the drag and the locked stroke **survive** the dive; you can also start charging during it. For `DiveContactWindow` **0.45 s** from the dive's start (the lunge + the landing) a normal swing gets an extended reach (anchor `DiveAnchorAhead` 3 studs along the dive direction from the server's root, radius +`DiveReachBonus` 5) and is judged like any swing (timing window, power, spin, smash, stretch risk). After that window, no new charge can start and a release is a miss ("still recovering from the dive"): no free retries during the get-up.
+- **Recovery 1.3 s** (`DiveRecovery`): no walking, no jumping, no new charge, no second dive; stamina cost and exhaustion rules unchanged; the server owns stamina and eligibility; one dive per incoming ball.
+- **Animations** (Action4, every joint): `NP_DiveRight/Left` re-timed to 1.65 s (0.35 lunge + 1.3 get-up: floor 21-34, brace 44, kneel 64, rise 84, ready 99) and **`NP_DiveBack`** (new: push back, airborne fall with the paddle reaching up/forward, land on the hips with the shoulders up, sit up, kneel, rise). Arm clipping fixed at the source: the old wrist targets were 2.2-3.5 studs from a ~1.9-stud arm, so the IK stretched the arms straight across the head/chest; targets are now clamped to reach, every frame 0-64 is baked with the arms re-solved clear of the head, torso and floor (searching nearby wrist points / elbow directions, preferring the previous frame's solution), then smoothed. The trailing leg's sideways value had the wrong sign (it crossed the other leg); fixed.
+
+### 4. Manual serve (player; the bot keeps its automatic serve) — toss timing, slow motion, contact and launch SUPERSEDED by Pass 3; the hand-held ball, region and controls still apply
+- **Ball in the free hand**: during your ReadyToServe the one gameplay ball rests on your LEFT hand (server mode `hand`; BallView draws the one BallVisual on your real LeftHand every frame; the server keeps its gameplay part at the same spot). The toss clip's first frame holds the arm.
+- **Where**: anywhere legal behind your end line: the ball must leave the hand behind the end line (by its radius), within the table's width + `CornerAllowance` 3 studs beyond either side line, at most `RegionDepth` 22 behind, on the platform. Derived from the table/platform at runtime (`ServeRules.region/check`). The client outlines where to stand on the floor (blue = legal, red = not) with the reason on screen; the server re-checks at the toss and refuses with the reason ("Serve refused: ..."). Walk freely before tossing.
+- **Space** tosses (it never jumps while it is your serve). From the toss on you are **locked in place** (no walking, boosting or diving) until the serve resolves. (Toss timing, contact rule and launch: see Pass 3; the apex slow motion, the fixed-height timer and the fixed launch mapping described here before were removed.)
+- **Strike**: a **fresh** left-click after the toss (a button held from before never counts) locks the **aim** and the forehand/backhand stroke; drag = spin; release = swing (forehand: `NP_ServeStrike` from the cocked pose; backhand: the backhand swing). One swing per toss.
+- **Faults**: a toss that is never struck (or a miss) falls to the floor = "dropped the serve toss" (point to the receiver); net + otherwise legal = **let** (replayed). Waiting before tossing is never a fault. Once tossed there is no cancel: leaving, respawning or losing focus lets the ball drop (a fault).
+
+### Tests
+**Automated / scripted in Studio Play** (remotes, the `NotPongShotDebug` bridge, `Humanoid:MoveTo`; real **Space / S / F / E key presses** through Studio's input tool; no real mouse):
+- Diagnosis numbers above (before/after), on your avatar.
+- Footwork: root height constant while moving (11.121 both ways; it moved 0.47 before); footwork weights never below 1.0 (the default walk never shows); paddle shoulder held at its pose while moving (65 deg backhand / 45 forehand; it halved before); feet on the floor standing (0.995 vs floor 1.0; bot 1.008-1.018); planted-foot slide per contact 0.1-0.3 studs once moving (the first step 2.3, contacts 2-4 0.4-0.6 while the blend settles; part of it is the facing turning ~1.5 deg per contact).
+- Off platform: our tracks at weight 0, default camera, AutoRotate on; hovering within +-0.5 of the edge: 0 switches; back on: stance + footwork + facing return, HipHeight unchanged (6.747).
+- Serve: ball on the palm (1.25-1.26 studs above the hand's centre) on and off the platform; Space -> toss without jumping; release 0.24 s after Space; apex slow motion at the server's apex (21.6); legal serves: centre forehand clean 33% (bot returned it), **right corner at the region's limit** backhand 33% aimed -5 deg (legal); faults: no swing -> "dropped the serve toss"; rising swing -> "too early (the ball was still high)"; late swing -> "too late"; full power -> "serve out"; illegal spot -> refused locally (red outline + reason) and by the server when requested directly; repeated swings at one toss refused; WalkSpeed 0 during the toss and 24 after.
+- Dives: F bound (E does nothing); S+F -> backward dive (classified Back); charge kept through a dive (still CHARGING, power counting); dive + swing -> "forehand SMASH clean" (a real hit, judged as a swing); backward dive without a swing -> no hit, point lost; release during the recovery -> miss "still recovering from the dive", and a new press refused; lunge 0.37 s, recovery 1.28-1.30 s; jumping disabled and WalkSpeed 0 during, restored after.
+- Console clean (no script errors) in every run.
+- Kit checks: every clip "CHECKS: all clear" except NP_DiveRight/Left (see known issues).
+
+**Visual (screenshots from the game camera, stills only)**: the serve-ready pose with the ball in the left hand, the region outline and hint; a side shuffle (wide base, lead foot stepping); a Shift run frame. Blender frame sheets of the run, toss and dives on the block rig.
+
+**Not verified**: smoothness at full frame rate (the tools give stills; Studio rendered at ~15 fps in the background, and for part of the session not at all); anything with a **real mouse** (charge feel, the aim line following the cursor, drag spin on a serve); the dive's reach extension actually saving a ball out of normal reach (the test ball was reachable anyway); focus loss mid-serve (by design it drops, a fault; not run); respawn mid-toss; frame rates other than Studio's; a PvP match (slow motion stays solo-only by the existing policy).
+
+### Known issues / notes
+- (Superseded by Pass 3: the serve's fixed-height timer that made your first four physical serves "too early" is gone.)
+- **Once seen, not reproduced**: during your session the held ball stopped following your hand (it stayed at the server's estimate) and the serve hint was empty; a fresh session tested on/off the platform could not reproduce it. (Pass 3 adds two fallbacks; see there.)
+- Dive clips: small remaining arm contacts on a few frames (<= 0.3 block units: right dive 10, 39-41, 53; left dive 10-11, 17-18), and a fast arm turn on a few frames (8-12 is the airborne reach smear). From up to 0.5 units through most of the floor phase before.
+- Footwork: residual planted-foot slide 0.1-0.3 studs per contact while moving; the first step after standing slides as the feet narrow from the ready base.
+- Serve aim and stroke both come from the cursor's screen X, so aiming left of centre also picks a backhand.
+- The bot's footwork measured at rest only (feet on the floor); not watched while it moves.
+- `live.make` in the kit saves a copy `out/<clip>.blend` per build; those copies include your table meshes from the open file (your .blend itself was not saved; the temporary scene was removed).
+
+### Files (this pass)
+- Shared: `Config.luau` (Animation, Stance.Locomotion/Layer, Movement dive settings, Serve player-serve settings), `StancePose.luau` (footwork controller, additive layer, dive kinds, serve toss/strike), `NotPongAnims.luau` (no fit offset), `NotPongAnimData.luau` (regenerated: 14 clips), `ShotInput.luau` (diveKind, reachFor), `ShotLaunch.luau` (serve launch; dive return removed), **new** `ServeRules.luau`.
+- Server: `Main.legacy.luau` (retargeting), `RallyService.luau` (player serve, apex slow motion, serve judging, manual dive reach, no auto return), `MovementService.luau` (dive contact window, 1.3 s, serve lock), `Stance.luau` (comment).
+- Client: `Main.local.luau` (retargeting, serve wiring), `ServeInput.luau` (rewritten: hand-held ball pose, region, aim line, Space toss), `ShotController.luau` (serve charge/aim/window, dive-kept charge and dive reach), `ShotFeedback.luau` (no rally arrow or swing on serves), `MovementInput.luau` (F, backward/diagonal rules, dive kinds), `BallView.luau` (ball on the hand).
+- /animate kit: `anims/_notpong.py` (ready loop, shuffles, runs, dives, backward dive, serve toss/strike), `anims/NP_Ready.py`, `NP_Run*.py`, `NP_DiveBack.py`, `NP_ServeToss.py`, `NP_ServeStrike.py`.
+
+### Manual playtest checklist
+1. Stand still: knees bent, wide base, a slow weight shift; the paddle stays up.
+2. Move left/right/back/diagonal and reverse quickly: short side-steps, no body bobbing, the paddle arm stays up. Hold Shift sideways: a low gallop with the hips turned, head and paddle toward the table.
+3. Walk off the platform: normal Roblox walk/run without the old shake; walk back on.
+4. (Serve and dive items: use the Pass 3 checklist below.)
+
+
+## Pass 3: camera follow, serve view, natural toss, forgiving serves, automatic dives, clean-shot honesty (2026-11-16, awaiting your review)
+
+Requested in chat (supersedes earlier instructions on manual dive contact, deliberately unforgiving serves and apex serve slow motion): a balanced, fluid lateral camera; a lower serve camera that blends up after the strike; a natural, slower toss with **no serve slow motion**; contact-based, legal serves; automatic dive returns (~90% legal); an investigation of clean (green) shots that miss; the remaining shuffle shake. Rally slow motion, scoring, lets, rotation, bot serves, assets, scale and physics are unchanged.
+
+References studied: `videoplayback.mp4` (watched with /watch, local frames) and `docs/Not pong obsidian vault/table-tennis-camera-inspo.png`. In the video the rally camera sits high behind the server with the player near the screen centre and follows them sideways; for the serve it drops to about head height with a nearly level view (horizon in the upper third, the table in the lower middle); after the strike it rises smoothly back to the rally view in ~1.25 s; the toss rises about a head above the hand.
+
+### 1. Camera (`Client/CameraController`, `Config.Camera`)
+- **Diagnosed**: a fixed right-shoulder offset (8 studs) with the camera following only 70% of the player's X: at the left side wall the avatar sat in the left third of the screen (root at 0.33 of the width) with its backhand side near the edge, at the right wall it sat centred. And the follow target led the player by the RAW velocity x 0.125 s: at a shuffle reversal that target jumped ~6 studs in one frame, so the camera accelerated harder than the player (measured on a recorded A/D shuffle path: camera 701 studs/s^2 vs the root's own 610) - the body appeared to jerk on screen.
+- **Now**: one camera owner writing CFrame **and Focus** each frame; the target is the root position (stable physics, never the animated head/feet) plus a look-ahead of velocity x `LeadTime` 0.1, clamped to `MaxLead` 3 studs and eased at `LeadRate` 6/s (off during dives); X and Z each follow through a critically damped spring (`LateralSmoothTime` / `DepthSmoothTime` 0.14 s; frame-rate independent, no overshoot of a fixed target); `ShoulderOffset` 8 -> 3 (constant, never flips), `CameraXFollow` 0.7 -> 0.88, `LateralFollow` 0.4 -> 0.45. Rally height, distance, pitch and FOV unchanged. A fast output easing (`OutputSmoothing` 30/s) only absorbs respawn / side-flip discontinuities.
+- **Serve framing** (`Config.Camera.Serve`): during your own serve's preparation and toss the camera lowers to `Height` 17 studs above the floor (about head height) at the same horizontal follow distance, aimed at the table centre `LookHeight` 2.5 above the surface (pitch ~5 deg down instead of ~17), shoulder offset **10** (at 4.5 the translucent avatar covered the middle of the table in Studio stills; at 10 the server stands centre-left as in the reference). **(Superseded by Pass 4: the sideways offset now follows the court position, `LateralOffset` / `CenterBlend` / `OffsetSmoothTime`.)** Blends are eased (smootherstep) over `EnterTime` 0.8 s / `ExitTime` 1.25 s; FOV never changes. Explicit cases: your serve struck (the referee counted the hit) -> blend up with the outgoing ball; a missed swing / dropped toss -> stays low until the point resolves; PointScored (fault, let pending) -> keeps the current framing, the next state decides; your next serve -> stays low; the bot's serve, rallies, waiting, match over -> rally framing; respawn -> snaps to the right framing. The aim is cursor-screen based and locked at the press, so camera motion never changes a locked aim.
+
+### 2. Natural toss, no serve slow motion (`Config.Serve`, `Shared/ServeRules`, Server/RallyService, Client/ServeInput, StancePose.serve)
+- The apex slow motion is **removed** (server `startServeSlowMotion`, the "serve" slow-motion kind, the client's serve slow-motion effects, `ApexSlowMotion` / `MaxSlowDuration`). Nothing slows during a serve: simulation, movement, animations, no tint/timer. The rally charge slow motion is never started or predicted for your serve (it still works in rallies, including when returning the bot's serve).
+- The toss clip plays at `TossAnimSpeed` **0.75** (the authored hand path, a slower readable lift); the ball leaves the hand at the clip's Release marker: `TossReleaseDelay` = `TossReleaseMarker` 0.25 / 0.75 = **0.333 s** after Space, the same moment on server and client. Upward speed **36 studs/s** (`PlayerTossSpeed`) with the normal shared physics (gravity, drag): measured apex **12.5 studs above the table** (~6 above the hand, ~1.5 head heights) 0.35 s after release; frame-to-frame vertical acceleration stayed at gravity through the apex (no hover). Measured alternatives: 28 -> apex 10.3 at 0.28 s, 32 -> 11.35 / 0.31, 40 -> 13.8 / 0.38 (a lower toss gives less time).
+
+### 3. Contact-based, forgiving serves (`ServeRules.phase/classify/target`, `ShotLaunch.serve`, RallyService `judgeServe`)
+- **Contact phase** (replaces the fixed-height timer): the falling toss, its centre between `ContactMinHeight` **6** and `ContactMaxHeight` 13 studs above the table (so from the apex down to about the head top) and within the locked stroke's horizontal reach. The paddle meets the ball `HitDelay` 0.07 s after the release (the strike clip's Hit marker), so the server judges the ball at release + 0.07 on its own simulation of the toss. Measured phase: **0.362 s** at normal speed. Middle 60% = clean, outer 20% each side = weak (`WeakEdge`): **both legal**. Before the phase = "too early (the ball was still rising)", after = "too late"; never struck = dropped toss (fault). The client's timing bar shows the phase (weak edges amber, middle green).
+- **Why 6 and not chest height**: measured on this table (net 2.63 high, 47.3 long, drag), a legal serve exists for only ~1-16% of contacts 1-2.5 studs above the table and ~35-75% at 4-5.5, even with a full scan; from ~7 up it exists for every input. The ready paddle sits ~8 above the table, so the band matches where the paddle is.
+- **Legal-serve solve** (Pass 4 adds the safe serve envelope and changes the ladder and budget; see there) (`ShotLaunch.serve`, shared physics, decided once at contact, nothing steered afterwards): the second bounce is aimed by the inputs (aim -> across, `LateralMargin` 4.5 inside the side lines; power -> depth `SecondDepthMin` 8 .. `SecondDepthMax` 18 studs past the net = pace); first bounce on your half (`FirstBounceDepth` 0.6) on the way; `ShotSolver.solveServe` bisects the speed (30-140) simulating table and net **with the full drag spin**; if that fails, a coarse scan (`ScanFirstDepths` x `ScanSpeeds`); then the same spin direction at `SpinLadder` 0.6 / 0.3 / 0; last resort half the aim at medium depth. Weak contacts: `WeakDepthFactor` 0.85 and the weak spin factor. Cost bounded by `SolveFlightTime` 1.2 and `SolveBudget` 0.02 (an earlier version spent ~0.4 s on rare serves).
+- The aim cue is now a line from the hand to a ring where the second bounce is aimed; the ring's depth follows your power while charging.
+- The serve contact is applied on the physics tick that reaches it (or by rewinding when latency put it in the past). Bot serving is unchanged.
+
+### 4. Automatic dive returns (`Config.Movement.DiveReturn*`, RallyService `tryDiveContact`, `ShotLaunch.diveReturn/diveMishit`)
+- F (left/right/backward), stamina 50, 1.3 s recovery and the animations are unchanged. **No charge, drag or release**: pressing F commits; the server's dive gate cancels any charge (pressAt/stroke) and ends a rally slow motion, marks the incoming ball's swing as used (a stale release can never become a second shot); the client cancels its charge on the lunge and refuses new charges for the whole dive.
+- Contact: during the dive's contact window (0.45 s), the FIRST physics tick at which the referee lets you play the ball (your turn, exactly one bounce on your half), the ball is falling or past your end line, inside the dive-extended reach (anchor 3 studs along the dive, radius 9 + 5) and not under/inside the table. No teleport: the launch starts from the ball's real position. One contact per dive and per incoming ball; if the window closes first: "Dive: the ball was out of reach" (counted as unreachable).
+- Outcome rolled **once** on the server at that tick (`DiveReturnChance` **0.9**): a defensive return (**Pass 4: now the slowest of `DiveReturnSpeeds` peaking at most `DiveReturnMaxApex` 18 above the table; the values here were** `DiveReturnSpeed` 60, topspin 25, toward the middle at depth 0.6, solved with the shared physics and verified by simulating the flight; slower / more central alternatives if needed) or a physical mishit (`DiveMishitKinds`: long (over-hit at `DiveMishitLongSpeed` 100), wide, net), with "DIVE SAVE" / "DIVE MISHIT" feedback and an impact burst. Unreachable attempts, deliberate mishits and unexpected solver failures are counted separately (`ServerStorage.NotPongRallyDebug`) and logged (solver failures as warnings).
+
+### 5. Clean shots that missed (investigated; ShotLaunch, ShotController, ShotFeedback, TrajectoryArrow, RallyService)
+Reproduced with a harness in real rallies against the bot (random stroke, spin, power, positions, still and moving players; releases inside the green window; the arrow captured at the release frame; the server's actual launch re-simulated). Findings on the old code (39 clean shots): no clean shot missed in that sample, but **smash** predictions were 6-13 studs from where the ball really landed (ordinary still shots 0.4-1.7), the arrow had vanished at the release in 5 of 9 moving shots, and in slow motion the arrow showed "clean" for releases the server then judged too early. Causes:
+1. **The timing error inside the green window was too steep**: yaw = timing x risk x 6 deg over a +-0.125 s window, i.e. up to 48 deg/s for a full-power shot and **144 deg/s for a smash** (risk x3). The arrow is necessarily a frame old at the release (measured 15-67 ms here), which alone moved a smash's landing by ~10 studs. Fix: `CleanTimingScale` **0.35** (`ShotLaunch.effectiveTiming`): inside the green window only 35% of the timing error counts, ramping continuously to the full error at the weak band's edge (weak/mistimed contacts keep their full risk).
+2. **Server and client anchors differed while moving**: the server saw the client-owned root ~0.1 s late, so the contact window's ideal moment, the timing error and the stretch were computed from a different spot; and the client froze its window early. Fix: the client sends its root with each press/release; the server uses it only within `MaxRootMismatch` 6 studs of its own view; the client computes its window exactly like the server (from the snapshot of the opponent's hit, with the current anchor, every frame).
+3. **Spin calibration fallback**: when the partly compensated spin had no solution the launch fell back to a spin-free calibration and then flew with full spin. Now the compensation is stepped down in the same spin direction (`ShotSolver.solveWithSpinFallback`).
+4. **Slow-motion arrow**: it showed the quality the server estimated when slow motion began; it now judges "release now" on the slowed timeline (the rally slow motion itself is unchanged).
+5. **Honest preview**: amber + "RISKY" when the same shot released 0.05 s later (`Arrow.TimingLookahead`) would fail or the landing is within `EdgeMargin` 1.5 studs of a side line / end line / the net line; a changed verdict snaps (no easing from an old path); smoothing 22 -> 35/s.
+After the fixes (30 clean shots, both strokes, all spin directions): the arrow showed a landing for all 30, all 30 landed; mean distance between the arrow's predicted landing and the real one: ordinary **1.0** studs, smash **3.5** (was ~7). No random misses were added; risk stays in smashes, stretch, weak timing and extreme spin.
+
+### 6. Shuffle shake (StancePose.start, camera)
+- **Diagnosed**: (a) the camera's raw velocity lead (above): the biggest contributor to apparent body shake at reversals (camera acceleration now 308 studs/s^2 max on the same recorded path, was 701; lateral 262, was 629); (b) the footwork smoothed one direction VECTOR, which passes through ~zero in a left/right reversal, where the normalised shares briefly gave the legs to the forward/back clips (replayed on the recorded reversals: up to 53% forward/back share during purely sideways motion) - a leg flick at every reversal.
+- **Fixed**: each direction clip's share now eases on its own toward the current direction's share (sum always 1; replayed: <= 29%, from the diagonal moves in the recording); `DirectionRate` 12 -> 15. The low stance, clips, cadence and planting are unchanged. /animate (Blender) was not used this pass: the measured causes were in the blend code and the camera, not the clips.
+
+### Tests
+**Automated / scripted in Studio Play** (remotes, `Player.NotPongShotDebug` / `NotPongArrowDebug`, the new `ServerStorage.NotPongRallyDebug`, teleports in the harness only, and real **Space / A / D / S** key presses through Studio's input tool; no real mouse):
+- Serve solver sweep (final code, running server): **7290/7290 legal** over heights 6-12.4, 9 spots across the legal region, power 0/0.5/1, aim -1/0/1, 9 spin settings, clean and weak; 89% with the full spin; mean 6 ms, max 122 ms.
+- Live serves: 7 in-phase serves (clean and weak, both strokes, centre / both corners / deep, power 0-100%, top/back/side/diagonal spin) all **legal** (Serving -> Rally); swing while rising -> "too early (the ball was still rising)", fault; late -> the client marks it "held past the toss", the toss drops, fault; no swing -> "dropped the serve toss"; 27 more auto-serves in the dive runs all legal.
+- Real Space press: release 0.35 s after Space; apex 12.53 above the table; no pause at the apex.
+- Serve camera: holds at 18 (17 above the floor), pitch -4.9 during preparation and toss; after the strike rises to 31.3 / -17.2 over ~1.25 s, max 20 studs/s and 49 studs/s^2, FOV 58 throughout; a missed serve keeps the low view through the fault, then rises before the bot's serve; bot serves stay in the rally view.
+- Lateral framing (projected): root on screen 0.40 (left wall) .. 0.48 (centre) .. 0.55 (right wall), was 0.33 .. 0.55; both blades and every table corner and the opponent in view from all walls/corners in both framings. Follow at 15/30/60/144 fps: within 0.28 studs (60 vs 144) and 1.2 studs at 15 fps; lag at a full-speed reversal <= 1 stud; overshoot after a stop <= 0.9 (the eased look-ahead).
+- Dives, live: **31 dives at balls 12.3-14.8 studs from the normal reach anchor (reach 9)**: 31 eligible, 26 returns (84%), all 26 solved legal and none went out or into the net (each was followed by the bot's return or a pop-up), 5 mishits (2 net, 2 wide, 1 long; each lost the point), 0 unreachable, 0 solver failures. Offline: 600/600 defensive returns legal from random contacts (max 2 ms); after the long-mishit fix every mishit kind misses; the roll split 0.901 over 10,000 rolls.
+- Clean shots: before 39 / after 30 (numbers in section 5).
+- Interrupted states: respawn mid-toss -> "dropped the serve toss", then the next serve starts with the ball on the new character's palm (0.01-0.03 studs, following while moving); focus loss mid-serve-charge -> charge cancelled, a later release ignored, the toss drops (fault); rally slow motion still triggers in rallies after serves.
+- Console clean in every run.
+
+**Visual (stills from the game camera, taken at the end once Studio rendered again; no footage)**: the serve view before the toss (low, near-level, region outline, ball in the left hand; after moving the shoulder offset to 10 the server stands centre-left and the table's right side, net and opponent are clear); mid-toss (ball above the head, paddle cocked, the timing bar's amber/green contact phase with the needle entering it, power charging, the aim line gold once locked); the serve view at the left wall (red outline + reason); the rally view at the right and left side walls (the player just right / left of centre with room on both sides, the whole table and the opponent in view). For most of the session Studio's 3D viewport rendered nothing (UI only), so everything else is numeric.
+
+**Not verified**: anything by eye at full frame rate (camera motion and the serve-to-rally blend, the toss's pace, the footwork at reversals, the amber RISKY state, dive saves); a real mouse; network latency (the root claim and the window match were measured at Studio latency only); a PvP match; the bot's footwork while moving.
+
+### Known issues / notes
+- A rare serve solve can still cost up to ~0.12 s of server time (one longer server frame at contact); typical 6 ms.
+- The serve contact band (6+ studs above the table) means serves are struck at about head height; lower contacts are "too late". That is a physics consequence of this table's net height and length (measured above).
+- The dive count (31) is small for a 90% estimate (84% observed is within the expected spread); the roll itself was checked over 10,000 draws.
+- The look-ahead overshoots a stop by up to ~0.9 studs (eased); `MaxLead` / `LeadTime` reduce it.
+- Footwork foot-slide could not be measured reliably: Studio ran at ~15 fps in the background.
+- `Config.Camera.Smoothing` / `VelocityLead` and `Serve.AimLineLength` are kept as documented legacy values; nothing reads them now.
+
+### Files (this pass)
+- Shared: `Config.luau` (Camera follow + Serve framing, Serve toss/contact/solve, Movement DiveReturn*, ShotControl CleanTimingScale / MaxRootMismatch, Arrow honesty settings, Locomotion DirectionRate), `ServeRules.luau` (contact phase, classify, target), `ShotLaunch.luau` (legal-serve solve, dive return / mishit, effective timing, spin-compensation ladder), `ShotSolver.luau` (solveServe flight horizon), `StancePose.luau` (per-direction footwork shares, toss speed, no serve slow-down).
+- Server: `RallyService.luau` (serve judging + deferred contact, no serve slow motion, dive commit + automatic contact, root claim, debug bridge), `MovementService.luau` (comment).
+- Client: `CameraController.luau` (rewritten follow + serve framing), `ShotController.luau` (dive commit, window like the server, root claim, serve phase), `ShotFeedback.luau` (serve phase bar, dive feedback, honest preview, slow-motion verdict), `TrajectoryArrow.luau` (RISKY state, snap on verdict change), `ServeInput.luau` (aim ring, no slow motion), `BallView.luau` (hand fallback).
+
+### Manual playtest checklist
+1. Rally: walk/shuffle to both side walls and the back corners: the avatar stays near the centre with room on both sides; quick A/D reversals: no camera lurch, no leg flick.
+2. Your serve: the camera lowers before the toss; Space: a gentle toss; click after the ball leaves the hand, release as it falls past head height: legal serve, then the camera rises. Try early (still rising), late (low), no swing, the corners, full power and spins. The ring shows where the second bounce goes.
+3. Dives: F with A/D/S at a ball you cannot reach: automatic return (mostly legal), no clicking; a charge in progress is dropped.
+4. Clean shots: watch the arrow: amber "RISKY" means a slightly later release fails; green shots should land.
+
+## Pass 4: safe serve curves, Q serving posture, court-position serve camera, defensive dive lobs, solver cost, new table (2026-11-17, awaiting your review)
+
+Requested in chat. Kept unchanged: no serve slow motion, the natural toss, the forgiving contact rule, rally slow motion, trajectory/timing guidance, the clean-shot fixes, the footwork and camera follow, scoring, lets, rotation, bot serving. Not added (as asked): long-rally speed escalation, practice challenges, opponent windup telegraphs (kept in `docs/Not pong obsidian vault/future ideas.md`).
+
+### Controls now (superseded controls marked)
+| Control | Now | Before |
+|---|---|---|
+| **Q** (your serve, ball in hand, before Space) | toggles the serving posture: **LeftLead** (left hip toward the table = forehand serve) / **RightLead** (right hip = backhand serve). Remembered for your next serve | (unbound) |
+| **Space** | tosses and **locks the posture** for that serve (Q does nothing during the toss and the stroke) | tossed |
+| Serve stroke | **from the posture** | was the cursor's screen side at the press (superseded) |
+| Cursor (serve) | aim only (where the second bounce goes) | aim + stroke |
+| Rally forehand/backhand | unchanged: the cursor's screen side | |
+| F (dive) | unchanged; the return is now a slower, higher defensive lob | flat return at 60 studs/s |
+
+### 1. Serve curvature: the safe serve envelope (`ShotLaunch.serveEnvelope`, `Config.Serve.Envelope`)
+- **Measured problem**: checking only the first two bounces let **785 of 1458 legal test serves (54%)** leave over the receiver's side line after their receiver-side bounce (sideways : forward speed up to 8.6 : 1), even 36 spin-free ones from wide spots aimed wide.
+- **Envelope (testable, ball-centre values; the whole predicted flight with the shared physics)**: E1 legal (own half, then the receiver's); E2 the receiver-side bounce at least `BounceMargin` 1.5 inside the side lines, and from there to the receiver's end-line plane the centre stays `SideMargin` 0.75 inside the side lines (a slow serve may bounce again on their half; leaving by the floor/table side first = escape); E3 right after that bounce sideways speed <= `MaxLateralRatio` 0.6 x the speed toward the end line; E4 playable: horizontal speed after that bounce <= `MaxReceiveSpeed` 85 and it crosses the end-line plane <= `EndLineMaxHeight` 19 above the floor.
+- **Before contact, never after**: the aimed second bounce is first shifted against the predicted post-bounce drift (`CompensationSteps` 2, `CompensationGain` 0.9) with the full spin; then the sidespin steps down (`SideSpinLadder` 1 / 0.7 / 0.45 / 0.2; topspin/backspin kept); then the aim eases toward the centre; last a spin-free centre serve. The forgiving rule is kept: an in-phase contact always gets a legal, safe serve.
+- **Result** (1458 serves: 3 heights x 6 spots x power 0/0.5/1 x aim -1/0/1 x 9 spins): **1458 inside the envelope**; after the receiver bounce max sideways ratio 0.60, max speed 63, apex 2.3-6.9 above the table; 394 of 972 sidespin serves kept the full sidespin, the rest a reduced curve (median bend ~2.2 studs from the straight line, earlier run); 41 (2.8%) ended as the spin-free centre serve (10 from the budget).
+- **High serves**: solved player serves bounce at most ~7 above the table after the receiver bounce, under the 7.5 smash height, so none are smashable in practice; there is no serve exemption in the smash rules (any eligible high ball, serve or not, is smashable).
+
+### 2. Q serving posture (`Config.Serve.Posture`, ServeInput, StancePose layer, ServeRules, RallyService)
+- Moderately side-on: the hips turn `HipYaw` 25 deg (the legs turn with them about the vertical; feet stay on the floor), the chest keeps `ChestFollow` 0.4 of it, the neck turns the rest back. Measured on your avatar: hips -24 / +26 deg, head within 1.4-1.8 deg of straight at the table, both feet at the floor (1.00). Fades while walking (pre-toss repositioning), blends in/out over `BlendTime` 0.25 s, held `FollowThroughHold` 0.6 s after the strike, then back to the ready stance. Rallies never show it.
+- The server receives the posture with the toss request, validates it and locks it; the serve stroke (contact anchor, strike animation) comes from it. The hand's hold/release point is turned with the chest on both server and client (`ServeRules.handPoint(..., posture)`), so the legal-region check and the toss start from the visible hand: measured palm vs model 0.32-0.34 studs in both postures (1.1-1.2 without the correction).
+- /animate (Blender) was not needed: the posture is an additive layer on the existing toss / strike / stance clips (the same clips play in both postures).
+
+### 3. Serve camera offset from court position (`Config.Camera.Serve.LateralOffset` 10 / `CenterBlend` 12 / `OffsetSmoothTime` 0.3)
+- Replaces the fixed right offset: offset = LateralOffset x f(courtX / CenterBlend), f(u) = u(3 - u^2)/2 clamped (smooth, no flip at the centre), courtX = the followed root X relative to the table centre, mirrored for the other end; then a critically damped spring. Q never affects it. Measured: offset +-10 / +-6.9 / +-2.5 at court x +-20 / +-6 / +-2 (identical mirrored); camera X - root X at the left limit -7.96 (both postures), centre +3.62/+3.63, right limit +7.17 (both). Head-height serve view, follow distance and the blend into the rally framing unchanged.
+
+### 4. Defensive dive returns (`Config.Movement.DiveReturnSpeeds` / `DiveReturnMaxApex` / `DiveSolveBudget`)
+- The slowest of 46 / 52 / 58 / 64 / 72 / 80 studs/s (horizontal) that lands legally and peaks at most 18 above the table; topspin 5, depth 0.7. A single slow speed was tried first and rejected: 46 studs/s had to arc 25-50 studs high against drag and cost up to 0.68 s to solve.
+- Measured (400 random contacts incl. 213 wide/deep): **400 legal**, apex 14.1-23.9 (median 16.9) above the table, 0.87-1.27 s to the opponent's bounce, solve <= 15 ms. Rolls (0.9), one contact per dive, no contact in the get-up: unchanged.
+
+### 5. Serve-solver cost
+- Inner solves bounded (`SolveCost`: 14 iterations, 2 speed retries, 0.15-stud tolerance, 10 bisection steps), the costly scan only when the bisection found nothing legal, a result cache (quantized inputs, re-validated against the exact contact), and `SolveBudget` 0.035 s before the spin-free fallback. Measured: worst **42 ms** (was 122), mean 8.6 ms.
+
+### 6. New table and net (concept image `docs/Not pong obsidian vault/ping-pong-table-concept.png`; reference frames from the video)
+- Built with the Blender MCP in a separate scene (your open `tableTennisTable.blend` was not saved or changed; the temporary scene was removed). Source: `assets/table/NotPongTable_v2.blend` (editable, this table only); import file `assets/table/NotPongTable_v2.fbx`; uploaded with your API key as model asset **100478979603787** (an earlier version, 106257705592531, is unused; delete it in Creator Hub if you like).
+- Parts (`Workspace.NotPongArena.Table.Visual.TableAsset`): `Top` (red-orange slab) and `Lines` (white edge + centre lines) structural Top zone; `EdgeBand` (thick charcoal band, cosmetic); `Legs` (two end frames: legs splaying out onto chamfered floor beams, cosmetic); `NetMesh` (thick dark strands, **2 rows x 35 columns of 0.91 x 0.91 openings, strands 0.20**, structural Net); `NetTape` (white top bar = the net top and the gameplay net length, structural); `NetPosts` (posts, arms, clamps, cosmetic). Openings are smaller than the 1.5-stud ball; the ball's net collision is still `TableWorld` (unchanged).
+- Fitted with the existing workflow (`prepareTableAsset` + `fitTableAsset`): surface 9.740 (Config 9.74), net top 12.371 (Config 12.371), bar length 39.761 = net length, net at the table centre line, legs on the floor; `validateTableAsset` and `validate` 0 problems; no re-fit warning at Play; one TableAsset. Appearance is yours to edit (colours/materials persist).
+- Backup: `ServerStorage/NotPongBackup_2026-11-17/TableAsset_previous` (your previous navy table, unchanged) + README with restore steps.
+- **Save the place** to keep the new table (it lives in the Edit data model; nothing was published or saved by me).
+- Reference findings vs assumptions: the video (640x360) shows a terracotta top, deep dark apron, slanted dark legs on a floor rail, dark square posts and a light net of ~6 rows; its strand thickness and under-table construction are not readable. The final look follows your concept image, not the video, where they differ (dark strands, 2 rows).
+
+### Tests
+**Automated / scripted in Studio Play** (debug bridges, remotes, teleports in harnesses; real **Q and Space** presses; no real mouse):
+- Serve envelope sweeps above; dive sweeps above; solver cost above.
+- Q: LeftLead/RightLead toggled by the real Q key; the stroke followed the posture with the cursor on the opposite screen half (LeftLead + cursor left -> forehand; RightLead + cursor right -> **backhand**, server agreed, legal serve); Q during the toss refused (real key + debug path); posture locked.
+- Camera offsets (above), both postures at the left limit, centre and right limit.
+- Table: alignment, persistence across Play/Stop, single asset, console clean.
+- Console clean after fixing two errors introduced and caught this pass (a camera field shadowing the new offset function; a posture variable declared after use).
+
+**Visual (stills from the game camera)**: the new table and net in the serve view and the rally view (the dark two-row grid and the white bar read clearly at both distances; the posture visibly turned in the serve view; the posture hint).
+
+**Not verified**: anything at full frame rate (camera motion with the court offset, the posture blend into toss/strike, net shimmer during camera movement: only stills were possible); a real mouse; the hand/ball release jump in motion (~15 fps capture could not resolve it; held-ball accuracy 0.32-0.34 studs); a match against the bot with the new serves end-to-end by a person.
+
+### Known issues
+- Serve: 59% of sidespin serves have their sidespin reduced to stay inside the envelope; 2.8% fall back to a spin-free centre serve. Loosen `Envelope.SideMargin` / `MaxLateralRatio` for more curve.
+- No player serve is high enough to smash.
+- The posture is a local additive layer: other clients would not see it (single-player today).
+- Dive lobs are not slow in horizontal speed (58-80): deep contacts need it against drag; the defensive character comes from the height and flight time.
+- Bot pop-ups: your log shows frequent "too early (ball not in reach yet)" swings at the bot's high pop-ups (observed, not investigated this pass).
+
+### Files (this pass)
+- Shared: `Config.luau`, `ShotLaunch.luau` (serveEnvelope, serve ladder/cache/budget, diveReturn), `ShotSolver.luau` (cost bounds), `ServeRules.luau` (posture, posture-aware hand point/check), `StancePose.luau` (posture layer).
+- Server: `RallyService.luau` (posture lock, stroke from posture).
+- Client: `ServeInput.luau` (Q, posture lock, hints), `ShotController.luau` (serve stroke override), `StanceController.luau` (posture), `CameraController.luau` (court-position offset).
+- Assets: `assets/table/NotPongTable_v2.blend`, `assets/table/NotPongTable_v2.fbx`. Studio: new TableAsset, backup folder.
+
+### Manual playtest checklist
+1. Your serve: Q a few times before Space (hips switch, head stays on the table, feet planted); Space, then Q (nothing happens). Serve with the cursor on either side: the stroke follows the posture.
+2. Serve from the left, centre and right: the camera favours your left / is balanced / favours your right, sliding smoothly as you walk; Q never moves it.
+3. Strong sidespin serves (drag left/right): a visible curve, then the ball heads to the bot's end, not out over the side.
+4. Dive (F) at a far ball: a high, slower lob that lands on the bot's half.
+5. Look at the new table and net during rallies and serves: do the squares read, any shimmer? Recolour anything in Studio if you like, then **save the place**.
+
+## Pass 5: hybrid footwork, detailed larger paddle, cursor-side holding lean (2026-11-17, awaiting your review)
+
+Kept unchanged: WalkSpeed, acceleration, WASD, platform bounds, ball physics, swing timing, camera, the ready stance's lower body and posture, the serve system (Q posture still decides the serve stroke), rally slow motion, dives.
+
+### 1. Why the legs micro-stepped (measured)
+The shuffle clips moved the body only 1.5 block-rig studs per cycle (5.1 studs on the 3.37x avatar). The cadence correctly followed the real speed, so at 24 studs/s the legs ran ~4.75 cycles a second, ~9.5 foot movements a second. Slowing the playback alone would have made the feet skate.
+
+### 2. Hybrid footwork (`/animate` kit + `Shared/StancePose.start`, `Config.Stance.Locomotion`)
+- New clips, built headlessly with the /animate kit (`kit/run.py make`, recipe `anims/_notpong.py`: `side_pose`, `cross_pose`, `step_pose`; your live Blender untouched), converted with `tools/anim_to_luau.py` into `NotPongAnimData.luau` (16 clips):
+  - `NP_ShuffleRight/Left`: step-out-and-close, **1.7 studs per cycle**, feet from 1.3 (closed) to 3.0 (open) apart, never crossing; CHECKS all clear.
+  - `NP_CrossRight/Left` (new): the trail leg crosses **in front**, the lead leg steps out behind it, hips open 16 deg toward travel, **3.0 per cycle**; one frame where the lower legs brush (~0.2 studs) at the crossing.
+  - `NP_ShuffleForward/Back`: controlled walking steps, 2.6 per cycle, knees bent, no run bounce.
+  - Unchanged: `NP_Ready` (idle legs), `NP_Run*` (Shift), dives, serve clips. `NotPongReadyStance` / `NotPongSwing` tracks unchanged (the legacy `NotPongReadyStanceLegs` builder is still unused).
+- Transition: sideways movement in one direction for `CrossoverAfter` 0.22 s above `CrossoverMinSpeed` 16 studs/s blends the crossover in (`CrossBlendIn` 9/s); it stays until the sideways speed drops below `CrossoverExitSpeed` 8 (hysteresis), blending out at `CrossBlendOut` 12/s; a reversal caps it at `ReversalCrossCap` 0.2 at once, so quick A/D plays as a direction-change shuffle step. Repeated taps never reach the threshold. The body's movement is never delayed (only the clip choice changes). Stopping settles into the ready stance (`StopRate`). Diagonals blend the direction clips' shares.
+- Cadence: one cycle clock = real speed / (the blended `Stride` x the avatar's scale) x `PlaybackScale`, clamped `MinCycleRate` / `MaxCycleRate`; every clip's planted foot moves back exactly as fast as the body moves on, so feet do not skate.
+- Player and bot: the same controller (client for the player, server for the bot), the same clips and settings.
+- **Make it more / less exaggerated**: `Stride.*` (bigger = longer, fewer steps; must match the clip, rebuild it in the kit if you change the shape), `CrossoverAfter` / `CrossoverMinSpeed` (crossover sooner/later), `PlaybackScale` (cadence), the kit constants `SIDE_NARROW/SIDE_WIDE`, `CROSS_*`, `STEP_STRIDE_*` for the shapes.
+- Measured with real A/D/W/S keys (60 fps): taps 0.55-0.75 cycles of shuffle, no crossover; holding A or D: crossover above 0.5 after 0.32 s, ~2.4 cycles/s once crossing (was ~4.75), 2.9-3.1 averaged over the 1.2 s hold; rapid A/D switching: no crossover; W 2.5 cycles/s; S was 3.9 cycles/s and its stride was lengthened from 2.2 to 2.6.
+
+### 3. Detailed larger paddle (`Workspace.NotPongArena.PaddleTemplate`)
+- Built with the Blender MCP in a temporary scene (removed; your file not saved): `assets/paddle/NotPongPaddle_v2.blend` (editable) + `.fbx`, uploaded with your API key as asset 99034390255354. Zones = separate MeshParts: `FrontRubber`, `BackRubber`, `WoodBlade` (core, layered edge, throat), `Handle` (grip), `EndCap`. Blade 4.16 x 4.30 (1.3x the previous 3.2), rubbers inset 0.05 so the wood edge shows; handle 1.75 (fist-sized, not scaled). The `Grip` attachment copies the old one's pose relative to the blade/handle, so it sits in the hand the same way. Previous template backed up in `ServerStorage/NotPongBackup_2026-11-17/PaddleTemplate_previous`.
+- **Customization workflow** (cosmetic only, no stats): each zone's `Color` + `Material` + a `SurfaceAppearance` named `Pattern` with `AlphaMode = Overlay` and a `ColorMap`: transparent texels show the part's Color, so colour and pattern are independent, and any rubber design works with any grip design. (A plain `TextureID` ignores Color: tried and replaced.) Pattern library (`tools/paddle_patterns.py` -> `assets/paddle/patterns/*.png`, uploaded as Images): pips 110926290854873, geometric 133124499125419, grip stripes 125416236478404, grip chevron 89658614787064, wood plies 101915834660786. UVs: rubbers planar across the blade; wood edge u around / v across the thickness; handle u around / v along. Edit the **template** (it is cloned onto the player and the bot at Play; verified: one paddle each, the template's colours and patterns on both, persisting across Play/Stop).
+
+### 4. Contact area follows the blade (`Config.Paddle.BladeScale`, `Config.ShotControl.ArmReach`, end of `Config.luau`)
+- Hit detection is a horizontal radius around the stroke's reach anchor (not paddle-part collision). It is now split into `ArmReach` 7.4 (fixed) + `BladeContactRadius` = `BaseBladeRadius` 1.6 x `BladeScale` 1.3 = 2.08, so `PaddleReach` = **9.48** (was 9): the contact area grows by exactly the blade's growth; the arm's reach is not multiplied. The bot's reach grows by the same 0.48 (8.48). Serves, returns, smashes, backhands and dives all use it.
+- Approximation and its limits: a circle around the anchor, not the blade's shape or orientation (the wrist lean does not move the contact area); an exact blade-shaped swept test would need a new hit system.
+- Measured: a ball 9.47 from the anchor is in reach, 9.49 is not; a pass whose closest point is 9.43 can be hit, 9.53 cannot (the old 9.00 refused both).
+- Keep them aligned: change `BladeScale` AND resize the template's rubbers/blade (not the handle) by the same factor; PaddleFactory warns at Play if the template's blade width disagrees.
+
+### 5. Cursor-side holding lean (`Config.Stance.RightWrist`, `Config.Stance.Backhand.RightWrist`)
+- The wrist is part of each stroke's ready pose (the stance track owns it; the swing leaves it unkeyed, so the lean carries through the swing; serve and dive clips own the arm while they play). So it follows the cursor side while idle, locks at charge start, ignores the drag, and switches after recovery, exactly like the stroke; the stroke cross-fade (`StrokeBlendTime` 0.12 s) blends it; `StrokeDeadZone` keeps the side at the centre.
+- Measured from the rally camera: forehand lean ~5 deg before -> **+33 deg** toward the right (face square to the table, 0.99); backhand ~49 deg -> **-31 deg** toward the left. 10 quick cursor crossings inside the dead zone: 0 stroke changes. A charge started on the right stayed forehand (locked) while the cursor was dragged to the left (the drag still made sidespin); the stroke updated once the stroke ended.
+- Serve: the Q posture keeps deciding the serve stroke (and so the lean); the cursor cannot override it during the toss.
+- Bot: picks forehand/backhand from the predicted contact's side relative to where it will stand (`BotController:setStroke`); it usually positions for a forehand.
+- No gameplay effect: launch direction, spin and contact are unchanged by the lean.
+
+### Tests
+**Automated / scripted (Studio Play; real A/D/W/S keys; debug bridges)**: footwork scenarios 1-8 above (numbers in section 2); paddle presence/zones on player and bot; reach boundary; lean angles and lock/dead zone; customization persistence across Play/Stop; console clean.
+**Visual (stills from the game camera)**: the larger paddle with the forehand lean in the serve view; a crossover stride frame while holding D; the back rubber's geometric pattern tinted blue (overlay working).
+**Needs your manual check in Studio**: the motion itself at full speed (crossover look, stop settle, reversal step, diagonals, swinging while moving, scenario 10), the bot's footwork while it moves (scenario 11), foot sliding by eye, smash/dive clipping with the bigger blade, real-mouse feel.
+
+### Known issues
+- The crossover's lower legs brush (~0.2 studs) on the crossing frame.
+- The pattern textures were in Roblox moderation review when applied; an unapproved one renders plain until approved.
+- Contact area is a circle (see section 4).
+- **Save the place** to keep the new paddle template and its patterns (Edit data model).
+
+### Files (this pass)
+- Shared: `Config.luau`, `StancePose.luau`, `NotPongAnimData.luau` (regenerated). Server: `PaddleFactory.luau`, `Stance.luau`, `BotController.luau`. Client: `StanceController.luau`, `ServeInput.luau` (debug only).
+- Kit: `anims/_notpong.py`, `anims/NP_ShuffleRight/Left/Forward/Back.py`, new `anims/NP_CrossRight/Left.py`.
+- Assets/tools: `assets/paddle/NotPongPaddle_v2.blend/.fbx`, `assets/paddle/patterns/*.png`, `tools/paddle_patterns.py`.
+
+### Manual playtest checklist
+1. Tap A / D: one controlled shuffle step. Hold A / D: it develops into crossover strides; release: feet plant, back to the ready stance. Quick A-D-A-D: shuffle steps, no crossover. W / S / diagonals.
+2. Move the cursor left/right while idle: the paddle leans ~30 deg toward that side. Charge, drag across the centre: the lean stays; it switches after the stroke.
+3. Q before your serve: the serve stroke follows the posture whatever the cursor does.
+4. Edit `PaddleTemplate` zones (Color, Material, the `Pattern` SurfaceAppearance's ColorMap) and press Play: both paddles show it.
+
+## Pass 5b: paddle v3 from the build guide (2026-11-16, awaiting your review)
+
+Requested in chat with `docs/Not pong obsidian vault/paddle design2.png` as an appearance guide: keep the blade size and hit area, shorter handle that fits the avatar's hand, thicker blade with visible plies and separate rubber faces, fine rubber texture instead of the coarse dots, better wood grain / bevels / grip edges, front, back and handle independently customizable. **Supersedes Pass 5 section 3's paddle description** (zones, handle length, pattern IDs); the customization workflow (Color + Overlay SurfaceAppearance) is unchanged.
+
+### What was inspected first
+- v2 template: blade 4.16 x 4.30 (rubbers 4.06 x 4.20 inset 0.05), wood 0.12 thick at the blade (rubbers at +/-0.06..0.12), handle 1.75 + end cap 0.20 (blade edge to cap end 2.35 = 0.55 of the blade height), `Grip` at Handle-local (0, -0.447, -0.048).
+- The avatar's block hand is 3.37 x 1.01 x 3.37 studs and the handle runs through its 3.37 depth: the fist covers Handle-local y -2.42..1.03, i.e. **the whole v2 handle and cap were already inside the fist**; only the blade (from y 1.275) shows. Any handle under ~3.4 studs is hidden in the hand, so "fits the hand" = the grip point stays inside the handle and the blade starts clear of the fist.
+
+### Paddle v3 (`Workspace.NotPongArena.PaddleTemplate`)
+- Source: `tools/build_paddle_v3.py` (run inside Blender; builds in a temporary scene, writes `assets/paddle/NotPongPaddle_v3.blend` + `.fbx`, removes the scene). Uploaded as Model asset **105684859632328**. All dimensions are constants at the top of the script.
+- Zones (separate MeshParts): `FrontRubber`, `BackRubber` (top sheets 0.03, rounded outer edge, inset 0.015), `Sponge` (both layers, 0.035 each), `WoodBlade` (outer plies, 2 x 0.09, two plies each via the texture's glue line), `WoodCore` (centre ply 0.08, darker), `Handle` (flared grip), `EndCap`. Edge from the back: black rubber, sponge, ply, ply, core, ply, ply, sponge, red rubber; total thickness 0.39 (wood 0.26, was 0.12).
+- Blade outline unchanged (ellipse 4.16 x 4.30, same centre): `WoodBlade.Size.X` = 4.16, so the BladeScale check and the 9.48 contact radius are unchanged. No gameplay value was touched.
+- Handle: shortened from the bottom, blade edge to cap end **2.025** (was 2.35; 0.47 of the blade height, "about half the blade" per the guide); waist 0.62, flaring to 0.78 at the cap and 1.30 where it meets the blade (top follows the blade outline); cap 0.13. The blade's placement in the hand is unchanged: the `Grip` attachment keeps the same world pose (now Handle-local (0, -0.826, -0.048) because the Handle part's centre moved), measured identical to 1e-6. The grip point sits 0.21 above the handle bottom; the fist still covers the handle; the flare and blade come out of it.
+- Bevels: rubbers 0.014 rounded edge, plies 0.005-0.012 (a visible groove between plies), sponge 0.003; handle is a smooth superellipse loft.
+- Default looks: FrontRubber red (205, 35, 30), BackRubber charcoal (45, 45, 50) (it was blue only as the Pass 5 customization test), Sponge cream, wood light / core darker, Handle wood with blue + charcoal inlays, EndCap dark.
+
+### Textures (`tools/paddle_textures_v3.py`, 1024 px, uploaded as Images)
+| Texture | Asset | Used on |
+|---|---|---|
+| rubber_grain (overlay) | 101271327264461 | FrontRubber, BackRubber, Sponge ColorMap |
+| rubber_grain_normal | 121467049606766 | FrontRubber, BackRubber NormalMap |
+| rubber_rough | 83627610964601 | rubbers, Sponge, WoodBlade, WoodCore RoughnessMap |
+| wood_grain (overlay, ply glue lines) | 136918838472101 | WoodBlade, WoodCore ColorMap |
+| wood_grain_normal | 80670354954243 | WoodBlade, WoodCore NormalMap |
+| grip_stripes_v3 (crisp flush inlays + lengthwise grain) | 76180200532344 | Handle ColorMap |
+| grip_chevron_v3 (alternative grip) | 116049682878676 | not applied (swap into Handle.Pattern.ColorMap) |
+UV conventions are in the generator's docstring (rubbers planar across the blade; wood edge u around x6, v across the wood thickness with glue lines at v 0.173/0.346/0.654/0.827; handle u around with 0.25 = front face, v along with 1 = top). They were "Reviewing" in moderation when applied; they render in your Studio already.
+
+### Backups / cleanup
+- v2 template moved to `ServerStorage/NotPongBackup_2026-11-17/PaddleTemplate_v2` (README updated); `PaddleTemplate_previous` (v1) still there. The temporary import and preview copies were deleted.
+- **Blender crashed once** during the first export attempt (exporting from a scene the window wasn't showing; crash log `%TEMP%\tableTennisTable.crash.txt`). Blender reopened from its 2:58 PM autosave of your table file; your `tableTennisTable.blend` on disk was not written (last saved 11/15). The script now shows its own scene during the export and switches back. I did not save any Blender file of yours.
+
+### Tests
+**Scripted (Studio)**: part sizes/offsets against the Blender geometry (all 7 within 1e-4); Grip world pose unchanged; Play x2: player and bot each have one paddle with all 7 zones and their SurfaceAppearances, collision/query off, the template's later colour edits on both (persistence across Play/Stop); no PaddleFactory blade-scale warning; console clean.
+**Visual (stills)**: Blender material previews (front, back, edge, three-quarter, handle and ply close-ups); Studio front, back, edge close-up, handle/flare close-up; in hand from the side (edge, flare leaving the fist) and from the front.
+**Not checked**: the paddle during a full rally / swing / dive at speed (clipping with the thicker edge), how the textures look after moderation if any is rejected.
+
+### Files
+- New: `tools/build_paddle_v3.py`, `tools/paddle_textures_v3.py`, `assets/paddle/NotPongPaddle_v3.blend/.fbx`, `assets/paddle/patterns/{rubber_grain, rubber_grain_normal, rubber_rough, wood_grain, wood_grain_normal, grip_stripes_v3, grip_chevron_v3}.png`.
+- Comments only: `server/Server/PaddleFactory.luau` (zone list), `shared/Shared/Config.luau` (BladeScale retune note).
+- Studio (unsaved until you save): `NotPongArena.PaddleTemplate` replaced; backup folder.
+
+## Pass 5c: rubber shape, edge band, plain colours, backhand face flip (2026-11-16, awaiting your review)
+
+Requested in chat with the "rubber shape & edge band" sheet. **Supersedes Pass 5b's zones, textures and default looks** (the v3 blade outline, thickness, handle and grip are kept) and **Pass 5 section 5's backhand pose values**.
+
+### Paddle v4 (`Workspace.NotPongArena.PaddleTemplate`)
+- Source `tools/build_paddle_v4.py` (Blender, temporary scene) -> `assets/paddle/NotPongPaddle_v4.blend` + `.fbx`, Model asset **116550750298564**. v3 backed up as `ServerStorage/NotPongBackup_2026-11-17/PaddleTemplate_v3` (v2 and v1 still there).
+- **Rubbers**: both faces have a flat lower edge at 0.46 studs above the blade's bottom with 0.34-radius rounded corners (`RUB_FLAT_Z`, `RUB_CORNER`); the wooden shoulder above the handle is exposed. The wood outline is unchanged (ellipse 4.16 x 4.30); only the rubber is trimmed. The sponge is now part of each rubber sheet (0.065 thick), so the total stays 0.39 (wood 0.26).
+- **Edge band**: `EdgeBand` is the centre layer of the blade, 0.07 thick (27% of the 0.26 sidewall), so from outside it is a black band centred on the edge with 0.095 of wood visible on each side. Started at 1/3 (0.09) and narrowed after a true side view (the reference's stripe is narrower than each wood layer). It follows the blade outline and stops where the handle meets the blade.
+- **Handle**: same length and width profile; its top now thins to the wood thickness so the flare runs flush into the exposed shoulder.
+- **Plain colours, no textures**: every zone is SmoothPlastic with its own Color: FrontRubber red (200, 30, 28), BackRubber black (28, 28, 30), WoodBlade and Handle light tan (232, 196, 146), EdgeBand (22, 22, 24), EndCap (40, 40, 44). No SurfaceAppearance, Texture or Decal on any zone (also checked on both runtime paddles). The texture assets from v3 remain uploaded and their generators remain in `tools/`, unused.
+- **Customizing later**: change a zone's Color/Material, or add a `SurfaceAppearance` to that one zone (AlphaMode Overlay keeps its Color under transparent texels). UVs are kept: rubbers planar across the blade; wood/band sidewall u around, v across the wood thickness (band v 0.365-0.635); handle u around (0.25 front) / v along.
+- **Import note**: this upload came into Studio rotated 180 deg about the vertical, which put the red rubber on the paddle's -Z side; fixed by placement (red at +Z as in v3) and checked in Play by geometry (which side the red part is on), not by name.
+
+### Backhand face flip (`Config.Stance.Backhand`, `Config.Swing.Backhand`, `StrokeBlendTime`)
+- Measured first: the grip puts the blade's face normal roughly along the forearm. Forehand (baseline, unchanged): red face toward the table 0.97, the camera sees the black face. The old backhand still pointed the red face forward-left (0.60), so the camera saw black in both.
+- New backhand ready pose (forward kinematics on the avatar's real joint attachments, verified to 0.0000 studs against the live paddle, with clearance checks for blade, hand and forearm against torso/head/upper arm, also through the cross-fade): shoulder (50, 71, 2), elbow (71, -83, 0) (forearm pronated), wrist (-17, 19, -39), torso twist 36. Elbow up in front of the right chest, forearm across the body, wrist cocked. The paddle stays on the same hand and grip.
+- Measured live (bot serving, gameplay camera): forehand -> camera sees **black**, red toward the table 0.97-0.98, lean 33-36 deg right; backhand -> camera sees **red** (0.73), black toward the table 0.82, lean 27 deg left, blade 3.2 left / 3.2 up / 6.5 forward of the root (backhand reach anchor is 4 left).
+- Transition: `StrokeBlendTime` 0.12 -> 0.2 s; sampled every frame: the face turns over smoothly in ~0.2 s (largest step 13.6 deg / 1.28 studs per frame at ~60 fps), grip attached throughout.
+- Backhand swing re-solved for the new base (back = wound left, strike in front with the black face to the table, follow up and right); played live: no blade contact with the body on any frame.
+- Smash: always used the forehand arm; it now also keys the forehand wrist (`StancePose.buildSwing`), so the flipped backhand wrist never twists the blade on the forehand arm.
+- Rules unchanged: cursor left = backhand, right = forehand; locked at charge start (tested: pointer moved left and a left drag (sidespin 90) while charging kept forehand / black), updated after the stroke (switched to backhand / red after release); during your serve the Q posture decides (a live serve was logged "forehand" with the cursor on the left).
+- Gameplay unchanged: hit detection is the same reach circle; no launch, power or spin value reads the wrist or the paddle parts.
+
+### Tests
+**Scripted (Studio Play)**: face seen by the gameplay camera per stroke (geometric normal, red side found by position); transition per-frame sampling; charge lock + drag; backhand swing, forehand swing and backhand-held smash with per-frame blade-vs-body checks; a legal player serve (toss + strike); player and bot paddles = 6 v4 zones, no texture layers; console clean.
+**Visual**: Blender material previews of v4: front, back, true side close-up (black rubber / wood / band / wood / red), three-quarter, shoulder and handle. **Not captured**: Studio views and in-hand / transition stills: Studio's 3D viewport stopped rendering during this pass (Edit and Play showed only UI); the in-hand results above are measurements.
+**Not re-tested live**: dives (two scripted attempts missed the live-rally window; nothing in the dive path changed: the dive clips own every joint); the bot holding a backhand (it uses the same Config pose; verified only through the shared code).
+
+### Known issues
+- A smash taken while the stance shows the backhand jumps to the forehand side at the start (existing behaviour: smashes always use the forehand arm), now more visible because the backhand arm is turned.
+- Studio's viewport not rendering: bring the Studio window forward / restart Studio, then check the views in the checklist.
+- **Save the place** to keep the v4 template (Edit data model).
+
+### Files
+- New: `tools/build_paddle_v4.py`, `assets/paddle/NotPongPaddle_v4.blend/.fbx`.
+- `shared/Shared/Config.luau` (Stance.Backhand, StrokeBlendTime, Swing.Backhand, BladeScale note), `shared/Shared/StancePose.luau` (smash keys the forehand wrist), `server/Server/PaddleFactory.luau` (comment).
+
+### Checklist
+1. Template views: front (red, flat lower edge, tan shoulder), back (black), side (black band centred, wood both sides), three-quarter.
+2. Rally: cursor right -> forehand, you see the black face; cursor left -> backhand, the paddle turns over and you see the red face; the switch is a smooth ~0.2 s turn.
+3. Charge on one side, drag across: no flip until the stroke ends. Q before your serve still decides the serve stroke.
+4. A dive and a smash from the backhand side.
+
 ## Next
 
-Playtest charge slow motion and the new stamina-limited Shift boost in Roblox Studio using their checklists above; neither change has been runtime-verified yet.
+Your review of the v4 paddle and the face flip (Pass 5c), your playtest of the Pass 5 checklist, then the Pass 4 tuning: `Config.Serve.Envelope` (more/less curve), `Config.Serve.Posture` (HipYaw, ChestFollow), `Config.Camera.Serve` (LateralOffset, CenterBlend, OffsetSmoothTime), `Config.Movement.DiveReturnSpeeds` / `DiveReturnMaxApex`, and the table's appearance in Studio.

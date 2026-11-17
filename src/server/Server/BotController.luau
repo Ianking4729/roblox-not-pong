@@ -42,6 +42,7 @@ end
 
 function BotController:goHome()
 	self.plan += 1
+	self:setStroke("Forehand")
 	local B = Config.BotPlay
 	self:moveTo(Vector3.new(TableWorld.center.X, 0, TableWorld.endLineZ("Bot") - B.HomeStepBack))
 end
@@ -100,7 +101,23 @@ function BotController:onOpponentHit(state)
 		local fwd = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z).Unit
 		local B = Config.BotPlay
 		self:moveTo(contact - right * B.AnchorRight - fwd * B.AnchorForward)
+		-- the bot's stroke POSE (visual, 2026-11-17): the bot has no cursor, so the side of the predicted contact relative
+		-- to where it will stand picks forehand / backhand (and with it the paddle's holding lean). Its hitting rules are
+		-- unchanged (Striker, right-side anchor).
+		local target = self.target
+		if target then
+			local side = (contact - target):Dot(right)
+			self:setStroke(if side >= 0 then "Forehand" else "Backhand")
+		end
 	end)
+end
+
+function BotController:setStroke(stroke: string)
+	local Stance = require(script.Parent:WaitForChild("Stance"))
+	local controller = Stance.controllerOf(self.bot)
+	if controller and controller.stroke ~= stroke then
+		controller:setStroke(stroke)
+	end
 end
 
 return BotController

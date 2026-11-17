@@ -16,6 +16,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local FrameDriver = require(script.Parent:WaitForChild("FrameDriver"))
+local PlatformZone = require(script.Parent:WaitForChild("PlatformZone"))
 
 local CharacterFade = {}
 
@@ -132,15 +133,9 @@ function CharacterFade.start(player: Player)
 		if not character then
 			return
 		end
-		local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-		if root then
-			local d = CharacterFade.insideDistance(platform, root.Position)
-			if onPlatform and d < -F.ExitMargin then
-				onPlatform = false
-			elseif not onPlatform and d > F.EnterMargin then
-				onPlatform = true
-			end
-		end
+		-- the shared on/off-platform state (same margins as before, plus a short dwell), so the fade switches together
+		-- with the camera, facing and stance
+		onPlatform = PlatformZone.isOn()
 		local target = if onPlatform then 1 else 0
 		if amount ~= target then
 			local step = dt / math.max(F.TransitionTime, 1e-3)
