@@ -101,7 +101,13 @@ end
 -- player's current boost request (false until they hold Shift, so a respawn starts at normal speed).
 function MovementService.apply(player: Player, humanoid: Humanoid)
 	initializePlayer(player)
-	if M.MaxJumpHeight then
+	local J = M.Jump
+	if J and J.Enabled then
+		-- (Pass 12) the take-off speed for Height under the character's extra gravity (Client/JumpController applies
+		-- the rest of the gravity while airborne): g = 8 h / T^2, v = sqrt(2 g h) = 4 h / T
+		humanoid.UseJumpPower = true
+		humanoid.JumpPower = 4 * J.Height / math.max(J.AirTime, 0.1) * (J.TakeoffScale or 1)
+	elseif M.MaxJumpHeight then
 		humanoid.UseJumpPower = false
 		humanoid.JumpHeight = M.MaxJumpHeight
 	end

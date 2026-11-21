@@ -23,11 +23,15 @@ local UserInputService = game:GetService("UserInputService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
+local ShotLaunch = require(Shared:WaitForChild("ShotLaunch"))
+local BallPhysics = require(Shared:WaitForChild("BallPhysics"))
 local GameStates = require(Shared:WaitForChild("GameStates"))
+local ShotInput = require(Shared:WaitForChild("ShotInput"))
 local ServeRules = require(Shared:WaitForChild("ServeRules"))
 local StancePose = require(Shared:WaitForChild("StancePose"))
 
 local BallView = require(script.Parent:WaitForChild("BallView"))
+local ServeGuide = require(script.Parent:WaitForChild("ServeGuide"))
 local PlatformZone = require(script.Parent:WaitForChild("PlatformZone"))
 local StanceController = require(script.Parent:WaitForChild("StanceController"))
 
@@ -47,6 +51,7 @@ function ServeInput.attachShotController(controller: any)
 		elseif event == "swing" and data.serve then
 			strikeAt = os.clock()
 			ServeInput._strike(data.stroke)
+			ServeInput._predictServe(data)
 		end
 	end)
 end
@@ -78,14 +83,64 @@ function ServeInput.start()
 	local folder = Instance.new("Folder")
 	folder.Name = "NotPongServeVisuals"
 	folder.Parent = workspace.CurrentCamera
+	-- (developer only, Config.Serve.ShowRegionDebug: the legal release region on the floor; players never see it)
 	local edges = {}
-	for i = 1, 4 do
-		edges[i] = part("RegionEdge" .. i, S.RegionColor, folder)
+	if S.ShowRegionDebug then
+		for i = 1, 4 do
+			edges[i] = part("RegionEdge" .. i, S.RegionColor, folder)
+		end
 	end
-	local aimLine = part("AimLine", S.AimColor, folder)
-	local aimRing = part("AimRing", S.AimColor, folder)
-	aimRing.Shape = Enum.PartType.Cylinder
-	aimRing.Size = Vector3.new(0.08, S.AimRingRadius * 2, S.AimRingRadius * 2)
+	-- the serve landing guide (provisional aim -> final predicted landing: Client/ServeGuide)
+	local guide = ServeGuide.new(player:WaitForChild("PlayerGui"))
+	local guideContactT: number? = nil -- server time the paddle meets the toss (the guide hides then)
+	function ServeInput._predictServe(data: any)
+		-- the predicted serve from the REAL inputs (the same shared solve as the server: ShotLaunch.serve)
+		if data.quality == "miss" or typeof(data.contact) ~= "Vector3" then
+			return
+		end
+		local top, side = data.topspin or 0, data.sidespin or 0
+		if data.quality == "weak" then
+			top, side = top * Config.ShotControl.WeakSpinFactor, side * Config.ShotControl.WeakSpinFactor
+		end
+		local aim = aimLocked or (shot and shot.serveAim) or 0
+		local ok, launch = pcall(ShotLaunch.serve, data.contact, data.power or 0.5, top, side, aim, data.quality)
+		if ok and launch and launch.velocity then
+			guide.show(BallPhysics.newState(data.contact, launch.velocity, launch.spin), "final")
+			guideContactT = if typeof(data.contactT) == "number" then data.contactT else workspace:GetServerTimeNow() + S.HitDelay
+		end
+	end
+	-- the REPRESENTATIVE serve shown before the flick (Guide.Representative), re-solved only when the aim / spot changes
+	local G = S.Guide
+	local repAt, repAim, repHand = -math.huge, math.huge, Vector3.new(1e9, 0, 0)
+	local repPhaseKey: Vector3? = nil
+	local repContact: Vector3? = nil
+	local function representative(root: BasePart, scale: number, posture: string, aim: number)
+		local now = os.clock()
+		local release = ServeRules.handPoint(root.CFrame, scale, "release", posture)
+		if now - repAt < G.ResolveInterval then
+			return
+		end
+		if math.abs(aim - repAim) < G.ResolveAim and (release - repHand).Magnitude < G.ResolveMove and guide.mode() == "provisional" then
+			return
+		end
+		repAt, repAim, repHand = now, aim, release
+		-- the toss's typical contact point from here (the ideal moment of its contact phase, the server's own rule)
+		if not repPhaseKey or (release - repPhaseKey).Magnitude > 0.5 then
+			repPhaseKey = release
+			local anchor = ShotInput.anchor(root.CFrame, Config.ShotControl, ServeRules.postureStroke(posture))
+			local toss = BallPhysics.newState(release, Vector3.new(0, S.PlayerTossSpeed, 0), Vector3.zero)
+			local w = ServeRules.phase(toss, anchor or release, Config.ShotControl.PaddleReach)
+			repContact = if w then w.idealPosition else release + Vector3.new(0, 4, 0)
+		end
+		local R = G.Representative
+		local ok, launch = pcall(ShotLaunch.serve, repContact :: Vector3, R.Power, R.Topspin, R.Sidespin, aim, R.Quality)
+		if ok and launch and launch.velocity then
+			guide.show(BallPhysics.newState(repContact :: Vector3, launch.velocity, launch.spin), "provisional")
+		end
+	end
+	function ServeInput.guideDebug()
+		return guide.debug()
+	end
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "NotPongServe"
@@ -207,14 +262,14 @@ function ServeInput.start()
 		bridge.Name = "NotPongServeDebug"
 		bridge.OnInvoke = function(cmd: string?)
 			local toggled = if cmd == "toggle" then togglePosture() else nil
-			return { posture = posture, locked = lockedPosture, tossing = tossing, toggled = toggled, yaw = StanceController.getServePostureYaw(), footwork = StanceController.debug() }
+			return { posture = posture, locked = lockedPosture, tossing = tossing, toggled = toggled, yaw = StanceController.getServePostureYaw(), footwork = StanceController.debug(), guide = guide.debug(), edges = #edges, folderChildren = #folder:GetChildren() }
 		end
 		bridge.Parent = player
 	end
 
 	-- ---------- per frame ----------
 	local holding = false
-	RunService.RenderStepped:Connect(function()
+	RunService.RenderStepped:Connect(function(dt)
 		local st = state()
 		local info = BallView.getInfo()
 		local mine = myServe()
@@ -274,6 +329,8 @@ function ServeInput.start()
 		local ok, why = false, ""
 		if showRegion and root and character then
 			ok, why = ServeRules.check(root.CFrame, character:GetScale(), posture)
+		end
+		if showRegion and root and character and #edges > 0 then
 			local r = ServeRules.region()
 			-- the region is for the ball's release point; the stander's root sits behind/right of it by the hand offset
 			local off = ServeRules.handPoint(root.CFrame, character:GetScale(), "release", posture) - root.Position
@@ -297,37 +354,29 @@ function ServeInput.start()
 			end
 		end
 
-		-- aim cue on the table: a line from the hand to the second-bounce target ring; follows the cursor until the press
-		-- locks it; the ring sits at a nominal depth until the flick sets the power. A placement cue, not a predicted path.
-		local showAim = mine and root ~= nil and character ~= nil and (ready or tossing) and (inHand or tossInAir)
-		if showAim and root and character then
+		-- serve landing guide: PROVISIONAL (a representative serve at your current aim) through preparation and the toss,
+		-- FINAL (your real inputs) from the flick, hidden at contact (never drawn over the struck ball); also hidden on a
+		-- fault, reset, mode change or when you leave the platform
+		-- (the toss phase follows the server's Serving state, not only the local Space flag: the guide stays up throughout)
+		local showAim = mine and root ~= nil and character ~= nil and (ready or tossing or st == GameStates.State.Serving) and (inHand or tossInAir) and onPlatform
+		if showAim and root and character and guide.mode() ~= "final" then
 			local aim = aimLocked
 			if aim == nil then
 				aim = if shot and shot.pointerAim then shot.pointerAim() else 0
 			end
-			-- the ring's depth: a nominal pace until the flick decides the power (then the flick's power)
-			local power = if shot and shot.flick then shot.power else 0.5
-			local from = ServeRules.handPoint(root.CFrame, character:GetScale(), "release", lockedPosture or posture)
-			from = Vector3.new(from.X, Config.Layout.SurfaceY + 0.06, from.Z)
-			local target = ServeRules.target(aim, power)
-			local to = Vector3.new(target.X, Config.Layout.SurfaceY + 0.06, target.Z)
-			local L = (to - from).Magnitude
-			local color = if aimLocked ~= nil then S.AimLockedColor else S.AimColor
-			if L > 0.5 then
-				aimLine.Size = Vector3.new(0.3, 0.06, L)
-				aimLine.CFrame = CFrame.lookAt((from + to) / 2, to)
-				aimLine.Color = color
-				aimLine.Transparency = 0.45
-			else
-				aimLine.Transparency = 1
-			end
-			aimRing.CFrame = CFrame.new(to) * CFrame.Angles(0, 0, math.rad(90))
-			aimRing.Color = color
-			aimRing.Transparency = 0.35
-		else
-			aimLine.Transparency = 1
-			aimRing.Transparency = 1
+			representative(root, character:GetScale(), lockedPosture or posture, aim)
+		elseif guide.mode() == "provisional" then
+			guide.hide()
 		end
+		if guide.mode() == "final" then
+			if guideContactT and workspace:GetServerTimeNow() >= guideContactT then
+				guideContactT = nil
+				guide.hide(false, true) -- contact: the prediction goes, the real ball carries on
+			elseif not (st == GameStates.State.Serving or st == GameStates.State.Rally) then
+				guide.hide()
+			end
+		end
+		guide.step(math.clamp(dt, 0, 0.1))
 
 		-- hint text
 		local text, color = "", Color3.new(1, 1, 1)
@@ -336,7 +385,7 @@ function ServeInput.start()
 		elseif showRegion then
 			if ok then
 				local which = if posture == "LeftLead" then "left hip forward (forehand)" else "right hip forward (backhand)"
-				text, color = "Your serve: " .. which .. ". Q: switch stance. Aim with the mouse, Space to toss", S.RegionColor
+				text, color = "Your serve: " .. which .. ". Q: switch stance. Aim with the mouse, Space to toss (guide = a typical serve; your flick sets the real one)", S.RegionColor
 			else
 				text, color = "Can't serve from here: " .. why, S.RegionBadColor
 			end
@@ -349,6 +398,7 @@ function ServeInput.start()
 	end)
 
 	player.CharacterAdded:Connect(function()
+		guide.hide(true)
 		tossing, holding, aimLocked, lockedPosture = false, false, nil, nil
 		strikeAt = -math.huge
 		if handle then

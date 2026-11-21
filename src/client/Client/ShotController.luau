@@ -1,42 +1,41 @@
--- ShotController (client): the player's shot input, CLICK-AND-FLICK (2026-11-17; replaces hold-to-charge, drag-to-spin
--- and release-to-strike). The ONE input path for rally shots, emergency saves and the serve strike.
+-- ShotController (client): the player's shot input, CLICK-AND-FLICK with Q stroke selection (2026-11-18). The ONE input
+-- path for rally shots, emergency saves and the serve strike. (The 2026-11-17 button-free prototype was superseded and
+-- removed; a copy lives in tools/legacy/ShotController_mouseonly_2026-11-17.luau.)
 --
---   PREPARE   (no button)    the cursor's absolute SCREEN position picks the stroke (left = backhand, right = forehand),
---                            the base aim across the opponent's half and the drive/arc profile (ShotInput.prep), and
---                            places the prepared paddle (StancePose arm layer). Never a target, never power.
---   COMMIT    (fresh press)  snapshots stroke, aim and profile; holds the mouse in place (MouseBehavior =
---                            LockCurrentPosition, so the cursor and the preparation cannot drift and screen edges do not
---                            matter) and starts a FRESH flick measurement (Shared/FlickGesture) from relative movement
---                            only. Holding never adds power. Movement (WASD, Shift) is never touched.
---   FLICK     (while held)   one coherent flick = the swing: its start time + Flick.ContactDelay is the contact moment,
---                            its speed the power, its direction the spin. Exactly one request per commitment.
+--   SELECT    (Q)            toggles the rally stroke Forehand <-> Backhand (Config.ShotControl.StrokeSelect = "Q"). The
+--                            cursor never selects it. While committed / swinging, Q QUEUES the next stroke (applied when
+--                            the stroke's recovery ends); the current commitment never changes. Q during your own serve
+--                            (ball in hand / toss up) belongs to the serving posture (ServeInput, higher priority).
+--   PREPARE   (no button)    the cursor's absolute SCREEN position sets the base aim across the opponent's half (either
+--                            stroke reaches either side), the drive/arc profile (higher = arc) and the prepared paddle
+--                            (StancePose arm layer). Never a target, never power; movement before the press never
+--                            reaches the flick detector.
+--   COMMIT    (fresh press)  snapshots stroke, aim and profile; holds the cursor in place (MouseBehavior =
+--                            LockCurrentPosition: preparation cannot drift, screen edges do not matter) and starts a FRESH
+--                            flick measurement (Shared/FlickGesture) from relative movement only. Holding never adds
+--                            power. Movement (WASD, Shift) is never touched; the character is never moved or rotated.
+--   FLICK     (while held)   ONSET (1-2 frames after the hand starts): "onset" event with the predicted contact, the arm
+--                            starts the stroke so the paddle meets the ball at the contact moment (StrokeAtOnset).
+--                            FINALISED after a short bounded measurement (Flick.MeasureTime): speed = power, direction =
+--                            spin; the request is sent; with PredictBallResponse the ball's new flight is shown locally at
+--                            the contact moment (BallView.predictHit) until the server's snapshot confirms or corrects it.
+--                            Exactly one request per commitment.
 --   RELEASE                  without a flick: cancelled, no hit. After a flick: nothing more happens; the next attempt
 --                            needs a fresh press (a button still held after recovery never re-commits).
--- The client predicts the verdict immediately (same ShotInput window, timing and reach) for feedback and the arm's
--- contact; the server judges from its own simulation and replies (SwingResult). The client sends the flick's raw
--- measurements, never a power, a velocity or a contact point.
+-- The client predicts the verdict immediately (same ShotInput window, timing and reach) for feedback, the arm and the
+-- local ball response; the server judges from its own simulation and replies (SwingResult). The client sends the flick's
+-- raw measurements, never a power, a velocity or a contact point.
 --
 -- States: IDLE (preparing) -> COMMITTED -> SWUNG (request sent) -> CONTACT_RESOLVED -> RECOVERY -> IDLE; COMMITTED ->
--- IDLE on release without a flick, focus loss, input cancel, point reset, respawn or leaving the live rally.
+-- IDLE on release without a flick, focus loss, UI text focus, input cancel, point reset, respawn or leaving the rally.
 -- SERVE: while your own toss is in the air (snapshot flag `sv`) a FRESH press (after the toss started) commits the serve:
--- the aim from the cursor's screen X (ServeRules.aimFromScreen), the stroke from the serving posture (Q); a flick
--- strikes (timing against the toss's contact phase). Rally slow motion is off (Config.ChargeFreeze).
--- EMERGENCY SAVE (Config.Emergency): a ball whose path never enters your normal reach but crosses the outer ring is
--- judged against the ring's window; the predicted attempt is reported in the "swing" event (kind = "emergency").
---
--- RALLY INPUT MODE (Config.ShotControl.RallyInput; exactly one is active):
---   "ClickLock"  everything above.
---   "MouseOnly"  (2026-11-17 prototype) rally shots need no button. While a ball is coming to you, every movement event
---                goes to Shared/MouseSwing, which separates moving the paddle (preparation, including fast stance
---                switches) from a deliberate flick. A candidate's ONSET freezes the live preparation (when its contact
---                would fall in the attempt zone, Config.MouseOnlyRally) and restores the preparation recorded just
---                BEFORE the flick's first movement (prepHistory), so the flick's own path never changes the stroke or the
---                aim. A recognised flick inside the attempt zone commits that snapshot and swings through the same
---                path as a click-and-flick (same request, same validation, same one-swing-per-ball). A sweep, a warp or
---                a flick outside the zone is ignored (preparation). Recovery returns to preparation by itself. The left
---                button is passed through during rallies; the SERVE still uses press + flick exactly as before.
--- Events (listeners): "stroke", "commit" (mouseOnly = true when made by a flick), "onset" / "onsetEnd" (a candidate's
--- reversible wind-up), "swing", "result", "cancel", "reset", "candidate" (an ignored mouse-only candidate: why).
+-- the aim from the cursor's screen X (ServeRules.aimFromScreen), the stroke from the serving posture; a flick strikes
+-- (timing against the toss's contact phase, from the Anchor rule: serves are unchanged).
+-- REACH (Config.ShotControl.ContactModel): "Body" = one symmetric torso-centred zone for both strokes (Config.ContactZone,
+-- ShotInput.bodyZone); "Anchor" = the previous per-stroke circle. EMERGENCY SAVE: a ball whose path never enters the
+-- normal zone but crosses the emergency zone is judged against that zone's window (kind = "emergency").
+-- Events (listeners): "stroke", "strokeSelect", "commit", "onset", "onsetEnd", "swing", "result", "cancel", "reset",
+-- "serveAim".
 
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -51,14 +50,12 @@ local BallPhysics = require(Shared:WaitForChild("BallPhysics"))
 local TableWorld = require(Shared:WaitForChild("TableWorld"))
 local ServeRules = require(Shared:WaitForChild("ServeRules"))
 local FlickGesture = require(Shared:WaitForChild("FlickGesture"))
-local MouseSwing = require(Shared:WaitForChild("MouseSwing"))
 
 local BallView = require(script.Parent:WaitForChild("BallView"))
 
 local ShotController = {}
 
-local S, F, E, MO = Config.ShotControl, Config.Flick, Config.Emergency, Config.MouseOnlyRally
-local MOUSE_ONLY = S.RallyInput == "MouseOnly"
+local S, F, E = Config.ShotControl, Config.Flick, Config.Emergency
 local STATE = table.freeze({
 	IDLE = "IDLE",
 	COMMITTED = "COMMITTED",
@@ -78,7 +75,9 @@ function ShotController.start(player: Player)
 
 	local self = {
 		state = STATE.IDLE,
-		-- preparation (follows the cursor while IDLE; locked from the press)
+		-- stroke: `selectedStroke` is what Q chose; `stroke` is the active one (= selected while preparing, locked from
+		-- the press until the stroke's recovery ends; a Q press meanwhile only changes selectedStroke = the queue)
+		selectedStroke = "Forehand",
 		stroke = "Forehand", -- "Forehand" | "Backhand"
 		strokeLocked = false,
 		aim = 0, -- -1 .. 1
@@ -95,9 +94,12 @@ function ShotController.start(player: Player)
 		topspin = 0,
 		sidespin = 0,
 		flickEvents = 0, -- relative movement events since the press (diagnostics)
+		onsetFired = false, -- the committed flick's onset was announced (the arm's stroke start)
+		trace = nil :: any, -- (diagnostics) timestamps of the last flick: first movement, onset, finalised, contact
+		traceSamples = nil :: any, -- (display only) relative movement samples of the current / last commitment
 		-- verdicts
 		window = nil :: ShotInput.Window?, -- contact window for the current ball (SERVER time), normal reach
-		outerWindow = nil :: ShotInput.Window?, -- ... the emergency ring's window (only when the normal one is nil)
+		outerWindow = nil :: ShotInput.Window?, -- ... the emergency zone's window (only when the normal one is nil)
 		swungHits = -1, -- server hit counter of the ball we already swung at (-100 = the current toss)
 		seq = 0,
 		sentAt = 0,
@@ -114,15 +116,8 @@ function ShotController.start(player: Player)
 		pointerOverride = nil :: Vector2?, -- development tests only: replaces the cursor (screen fractions)
 		lastArmSolve = nil :: any, -- (diagnostics) the arm layer's last contact solve: error, time, clearance
 		lastGesture = nil :: any, -- (telemetry) the last commitment that ended without a recognised flick
-		onsetFired = false, -- the committed flick's onset was announced (the arm's wind-up)
-		-- mouse-only rally (RallyInput = "MouseOnly")
-		rallyInput = if MOUSE_ONLY then "MouseOnly" else "ClickLock",
-		armed = false, -- a ball is coming to you and the classifier is listening
-		inZone = false, -- (diagnostics) a flick right now would have its contact inside the attempt zone
-		candidate = nil :: any, -- the frozen preparation snapshot while a candidate flick is measured
-		nearWindow = nil :: ShotInput.Window?, -- the ball's closest approach (NearReach) when no reach window exists
-		lastIgnored = nil :: any, -- { why, at } the last ignored candidate (dev indicator / telemetry)
-		mouse = nil :: any, -- the MouseSwing classifier (mouse-only)
+		rallyInput = "ClickLock",
+		contactModel = S.ContactModel or "Anchor",
 	}
 
 	local listeners: { (string, any) -> () } = {}
@@ -153,45 +148,33 @@ function ShotController.start(player: Player)
 
 	local function setStroke(stroke: string, locked: boolean)
 		local changed = stroke ~= self.stroke or locked ~= self.strokeLocked
+		local strokeChanged = stroke ~= self.stroke
 		self.stroke, self.strokeLocked = stroke, locked
 		if changed then
-			self.window, self.outerWindow = nil, nil -- the other stroke reaches from the other anchor
+			if strokeChanged and self.contactModel ~= "Body" then
+				self.window, self.outerWindow = nil, nil -- (Anchor model) the other stroke reaches from the other anchor
+			end
 			fire("stroke", { stroke = stroke, locked = locked })
 		end
 	end
 
-	-- While preparing: follow the cursor (the serving posture decides the stroke during your serve).
-	-- (mouse-only) every live preparation is also kept for PrepHistory seconds, so a flick can use the one from just
-	-- before its first movement (prepAt), never the cursor's position after the flick moved it.
-	local prepHistory: { any } = {}
+	-- While preparing: the cursor sets aim / profile / paddle preparation; the stroke is the Q selection (or, with
+	-- StrokeSelect = "Cursor", the screen side); the serving posture decides the stroke during your serve.
 	local function updatePrep()
 		if self.locked then
 			return
 		end
 		local fx, fy = cursorFraction()
-		local stroke, aim, profile, u, v = ShotInput.prep(fx, fy, self.stroke)
+		local stroke, aim, profile, u, v = ShotInput.prep(fx, fy, self.selectedStroke)
+		if S.StrokeSelect == "Cursor" then
+			self.selectedStroke = stroke
+		end
 		if self.serveStrokeOverride then
 			stroke = self.serveStrokeOverride
 		end
 		self.aim, self.profile, self.prepU, self.prepV = aim, profile, u, v
 		self.serveAim = ServeRules.aimFromScreen(fx)
 		setStroke(stroke, false)
-		if MOUSE_ONLY then
-			local now = os.clock()
-			table.insert(prepHistory, { t = now, stroke = stroke, aim = aim, profile = profile, u = u, v = v, fx = fx, fy = fy })
-			while #prepHistory > 2 and prepHistory[1].t < now - MO.PrepHistory do
-				table.remove(prepHistory, 1)
-			end
-		end
-	end
-	-- The preparation recorded before os.clock() time `t` (the flick's first movement event was handled at t).
-	local function prepAt(t: number): any
-		for i = #prepHistory, 1, -1 do
-			if prepHistory[i].t < t then
-				return prepHistory[i]
-			end
-		end
-		return prepHistory[1] or { stroke = self.stroke, aim = self.aim, profile = self.profile, u = self.prepU, v = self.prepV }
 	end
 	function self.setServeStroke(stroke: string?)
 		self.serveStrokeOverride = stroke
@@ -214,6 +197,34 @@ function ShotController.start(player: Player)
 		return os.clock() - serveSwingAt > Config.Serve.Posture.FollowThroughHold + 0.1
 	end
 
+	-- ---------- Q: rally stroke selection ----------
+	-- Bound just BELOW ServeInput's Q (which sinks Q only when it switches the serving posture), so one press is never
+	-- both. Ignored while your own serve is in progress (ball in hand / toss up: the posture owns the stroke then).
+	local function toggleStroke(): boolean
+		if S.StrokeSelect ~= "Q" then
+			return false
+		end
+		local info = BallView.getInfo()
+		if info.mode == "hand" or info.serve or self.serving then
+			return false
+		end
+		self.selectedStroke = if self.selectedStroke == "Backhand" then "Forehand" else "Backhand"
+		if not self.locked then
+			updatePrep() -- shown at once (the arm blends to the new prepared pose)
+		end
+		fire("strokeSelect", { selected = self.selectedStroke, queued = self.locked })
+		return true
+	end
+	ContextActionService:BindActionAtPriority("NotPongRallyStroke", function(_, inputState)
+		if inputState ~= Enum.UserInputState.Begin then
+			return Enum.ContextActionResult.Pass
+		end
+		if UserInputService:GetFocusedTextBox() then
+			return Enum.ContextActionResult.Pass
+		end
+		return if toggleStroke() then Enum.ContextActionResult.Sink else Enum.ContextActionResult.Pass
+	end, false, Enum.ContextActionPriority.High.Value - 1, Enum.KeyCode.Q)
+
 	-- ---------- mouse hold ----------
 	local mouseHeld = false
 	local function holdMouse(on: boolean)
@@ -235,15 +246,24 @@ function ShotController.start(player: Player)
 		local r = rootPart()
 		return r and r.Position or nil
 	end
-	local function reachNow(): (Vector3?, number)
+	-- The rally reach right now (either contact model): what ShotInput.contactWindow takes (zone or anchor, radius).
+	local function reachNow(emergency: boolean?): (any, number)
 		local r = rootPart()
 		if not r then
 			return nil, S.PaddleReach
 		end
-		return ShotInput.reachFor(r.CFrame, S, self.stroke)
+		return ShotInput.reachZone(r.CFrame, S, self.stroke, emergency)
+	end
+	function self.reach(emergency: boolean?): any
+		return (reachNow(emergency))
 	end
 	function self.anchor(): Vector3?
-		return (reachNow())
+		return ShotInput.reachPoint((reachNow()))
+	end
+	-- The serve's reach point (serves keep the Anchor rule: ServeRules.phase).
+	local function serveAnchor(): Vector3?
+		local r = rootPart()
+		return r and ShotInput.anchor(r.CFrame, S, self.stroke) or nil
 	end
 	local function incomingNow(): boolean
 		local info = BallView.getInfo()
@@ -263,12 +283,8 @@ function ShotController.start(player: Player)
 		self.flickEvents = 0
 	end
 
-	-- (mouse-only; defined with the classifier below) drop a candidate in progress: unfreeze the preparation, end the wind-up
-	local dropCandidate: (why: string) -> () = function(_why: string) end
-
 	local function reset(why: string?)
 		holdMouse(false)
-		dropCandidate(why or "reset")
 		local was = self.state
 		if was == STATE.COMMITTED then
 			-- (telemetry: what the hand did during a commitment that ended WITHOUT a recognised flick)
@@ -280,10 +296,14 @@ function ShotController.start(player: Player)
 				state = g and g.state or "none",
 				serving = self.serving,
 			}
+			if self.onsetFired then
+				fire("onsetEnd", { why = why }) -- a stroke started at the onset that never became a swing: retract it
+			end
 		end
 		self.state = STATE.IDLE
 		self.locked = false
 		self.serving = false
+		self.onsetFired = false
 		clearFlick()
 		if why then
 			self.lastReason = why
@@ -291,7 +311,7 @@ function ShotController.start(player: Player)
 		if was ~= STATE.IDLE then
 			fire("reset", { why = why })
 		end
-		updatePrep() -- back to preparing: the cursor picks the next stroke
+		updatePrep() -- back to preparing (a queued Q selection applies now)
 	end
 
 	-- ---------- commit ----------
@@ -307,9 +327,6 @@ function ShotController.start(player: Player)
 		if serve and self.swungHits == -100 then
 			return false -- already swung at this toss
 		end
-		if MOUSE_ONLY and not serve then
-			return false -- mouse-only rallies: no button commitment (the click passes through); serves are unchanged
-		end
 		updatePrep() -- the cursor's position at the press
 		self.serving = serve
 		self.locked = true
@@ -319,6 +336,8 @@ function ShotController.start(player: Player)
 		self.gesture = FlickGesture.new()
 		self.state = STATE.COMMITTED
 		self.onsetFired = false
+		self.trace = { commit = self.commitAt }
+		self.traceSamples = {} -- (display only) this commitment's movement samples, Client/CursorTrace
 		setStroke(self.stroke, true)
 		holdMouse(true)
 		if serve then
@@ -337,7 +356,7 @@ function ShotController.start(player: Player)
 		return true
 	end
 
-	-- ---------- prediction (the client's view of the verdict, for instant feedback and the arm) ----------
+	-- ---------- prediction (the client's view of the verdict, for instant feedback, the arm and the ball) ----------
 	-- The ball at server time `t` from the latest snapshot (the same simulation the server judges with).
 	local function ballAt(t: number): BallPhysics.State?
 		local snap = BallView.getSnapshot()
@@ -387,6 +406,11 @@ function ShotController.start(player: Player)
 		self.power, self.topspin, self.sidespin = ShotInput.flickShot(flick.speed, flick.dirX, flick.dirY)
 		local startServer = toServer(flick.startT)
 		local contactT = startServer + (if self.serving then Config.Serve.HitDelay else F.ContactDelay)
+		local tr = self.trace
+		if tr then
+			tr.start, tr.onset, tr.final, tr.contactServer = flick.startT, flick.detectT, os.clock(), contactT
+			tr.contactClock = flick.startT + (if self.serving then Config.Serve.HitDelay else F.ContactDelay)
+		end
 		if not self.serving and not incomingNow() then
 			-- no ball on its way to you (not yet, or already past): a miss, never queued for a later ball (nothing to send)
 			local why = if BallView.getInfo().hits == self.swungHits then "already swung at this ball" else "no ball to hit"
@@ -394,21 +418,38 @@ function ShotController.start(player: Player)
 			self.lastResult, self.lastReason, self.lastKind = "miss", why, "normal"
 			self.resolvedAt = os.clock()
 			holdMouse(false)
-			fire("swing", { stroke = self.stroke, kind = "normal", quality = "miss", contactT = contactT, power = self.power, serve = false, flick = flick, hold = flick.startT - self.commitAt, noBall = true })
+			fire("swing", { stroke = self.stroke, kind = "normal", quality = "miss", contactT = contactT, power = self.power, serve = false, flick = flick, hold = flick.startT - self.commitAt, noBall = true, onsetStarted = self.onsetFired })
 			fire("result", { result = "miss", reason = why })
 			return
 		end
 		self.predicted = predictSwing(contactT)
+		self.clientSmash = not self.serving and self.predicted.kind == "normal" and self.predicted.quality ~= "miss" and self.predicted.contact ~= nil
+			and ShotInput.smashEligible(self.predicted.contact, self.power)
+		self.serverSmash = nil
 		if self.serving then
 			serveSwingAt = os.clock()
 		end
 		self.seq += 1
 		self.sentAt = os.clock()
-		self.swungHits = if self.serving then -100 else BallView.getInfo().hits
+		BallView.noteSwing()
+		local hitsAtSwing = BallView.getInfo().hits
+		self.swingHits = hitsAtSwing -- (rally pace: this return's number)
+		self.swungHits = if self.serving then -100 else hitsAtSwing
 		self.state = STATE.SWUNG
 		self.lastResult, self.lastReason = "...", ""
 		holdMouse(false) -- the flick is over; the cursor is free again (the button may still be held)
 		local pr = self.predicted
+		-- the request first (latency), then the local feedback
+		swingRemote:FireServer({
+			seq = self.seq,
+			t = startServer,
+			commitT = self.commitServer,
+			stroke = self.stroke,
+			aim = if self.serving then self.serveAim else self.aim,
+			profile = self.profile,
+			flick = { d = flick.distance, u = flick.duration, x = flick.dirX, y = flick.dirY },
+			root = rootClaim(),
+		})
 		fire("swing", {
 			seq = self.seq,
 			stroke = self.stroke,
@@ -423,6 +464,9 @@ function ShotController.start(player: Player)
 			aim = self.aim,
 			profile = self.profile,
 			serve = self.serving,
+			onsetStarted = self.onsetFired, -- the arm already started this stroke at the onset
+			-- the SAME rule the server applies to the hit (clean / weak contact, power, height, behind the end line): a real smash
+			smash = pr.kind == "normal" and pr.quality ~= "miss" and pr.contact ~= nil and ShotInput.smashEligible(pr.contact, self.power),
 			-- (telemetry) the gesture and the timing it was judged on
 			flick = flick,
 			hold = flick.startT - self.commitAt,
@@ -431,22 +475,22 @@ function ShotController.start(player: Player)
 			window = if pr.kind == "emergency" then self.outerWindow else self.window,
 			recognizedT = os.clock(),
 		})
-		swingRemote:FireServer({
-			seq = self.seq,
-			t = startServer,
-			commitT = self.commitServer,
-			stroke = self.stroke,
-			aim = if self.serving then self.serveAim else self.aim,
-			profile = self.profile,
-			flick = { d = flick.distance, u = flick.duration, x = flick.dirX, y = flick.dirY },
-			root = rootClaim(),
-		})
+		-- the ball's new flight shown at the contact moment (local prediction of the server's launch)
+		if S.PredictBallResponse and not self.serving and pr.quality ~= "miss" and pr.contact then
+			local ok, launch = pcall(self.predictLaunch)
+			if ok and launch then
+				BallView.predictHit(contactT, pr.contact, launch.velocity, launch.spin, hitsAtSwing)
+			end
+		end
 	end
 
 	local function resolve(result: string, reason: string, msg: any?)
 		self.lastResult, self.lastReason = result, reason
 		self.resolvedAt = os.clock()
 		self.state = STATE.CONTACT_RESOLVED
+		if result ~= "clean" and result ~= "weak" then
+			BallView.cancelPrediction() -- the server did not hit it: the ball keeps its real path
+		end
 		fire("result", { result = result, reason = reason, offset = self.lastOffset, kind = self.lastKind, msg = msg })
 	end
 
@@ -455,7 +499,13 @@ function ShotController.start(player: Player)
 			return
 		end
 		self.lastOffset = msg.offset
+		self.serverSmash = msg.smash
+		self.serverContact = msg.contact
 		self.lastKind = if msg.kind == "emergency" then "emergency" else "normal"
+		if self.trace then
+			self.trace.reply = os.clock()
+			self.trace.serverContact = msg.contactT
+		end
 		resolve(msg.result, msg.reason or "", msg)
 	end)
 
@@ -463,6 +513,9 @@ function ShotController.start(player: Player)
 	local function onButton(_, inputState: Enum.UserInputState)
 		if inputState == Enum.UserInputState.Begin then
 			self.buttonDown = true
+			if UserInputService:GetFocusedTextBox() then
+				return Enum.ContextActionResult.Pass -- typing in a UI box: never a commitment
+			end
 			if commit() then
 				return Enum.ContextActionResult.Sink
 			end
@@ -482,25 +535,52 @@ function ShotController.start(player: Player)
 	-- ---------- relative mouse movement -> flick ----------
 	-- Each movement event becomes one timestamped sample: movement in REFERENCE pixels (Delta x ReferenceHeight /
 	-- viewport height), covering the time since the previous rendered frame (input arrives in frame batches). Only while
-	-- COMMITTED; preparation movement before the press never reaches the detector (it starts fresh at the press).
-	-- MOUSE-ONLY: the same samples go to the MouseSwing classifier while armed (defined below, with the zone logic).
+	-- COMMITTED: preparation movement before the press never reaches the detector (it starts fresh at the press).
 	local lastFrameT = os.clock()
 	local lastMousePos: Vector2? = nil
-	local onMouseOnlyMove: (now: number, tPrev: number, dx: number, dy: number) -> () = function() end
+	local TRACE = Config.Feedback.CursorTrace
 	local function onMovement(now: number, tPrev: number, dx: number, dy: number)
-		if self.state == STATE.COMMITTED and self.gesture then
-			-- click-to-lock rally, or the serve (both modes)
-			self.flickEvents += 1
-			local g = self.gesture :: FlickGesture.Detector
-			local flick = g:add(now, tPrev, dx, dy)
-			if flick then
-				swing(flick)
-			elseif g.state == "segment" and not self.onsetFired and not self.serving then
-				self.onsetFired = true
-				fire("onset", { stroke = self.stroke }) -- (the arm's reversible wind-up)
+		-- (display only: Client/CursorTrace draws these; they never feed back into the shot) the samples of this
+		-- commitment, and a short tail after the flick was finalised
+		local samples = self.traceSamples
+		if samples and (self.state == STATE.COMMITTED or (self.flick and now - self.flick.endT <= (TRACE.TailTime or 0))) then
+			table.insert(samples, { t = now, dx = dx, dy = dy, speed = math.sqrt(dx * dx + dy * dy) / math.max(now - tPrev, F.MinElapsed) })
+			if #samples > 400 then
+				table.remove(samples, 1)
 			end
-		elseif MOUSE_ONLY then
-			onMouseOnlyMove(now, tPrev, dx, dy)
+		end
+		if self.state ~= STATE.COMMITTED or not self.gesture then
+			return
+		end
+		self.flickEvents += 1
+		local tr = self.trace
+		if tr and not tr.firstMove and (dx * dx + dy * dy) >= F.JitterPixels * F.JitterPixels then
+			tr.firstMove = now
+		end
+		local g = self.gesture :: FlickGesture.Detector
+		local onsetBefore = g.state == "segment"
+		local flick = g:add(now, tPrev, dx, dy)
+		if not self.onsetFired and not self.serving and (flick or g.state == "segment") and not onsetBefore then
+			-- ONSET: start the visible stroke now, timed to meet the ball at the contact moment (flick start + ContactDelay)
+			self.onsetFired = true
+			local startT = if flick then flick.startT else (g:onset())
+			if startT then
+				local contactT = toServer(startT) + F.ContactDelay
+				local pr = predictSwing(contactT)
+				if tr then
+					tr.onsetFired = os.clock()
+				end
+				-- SMASH ATTEMPT (drives the visual hop only): the predicted contact meets the smash rule's geometry (power is not
+				-- known yet: the flick's onset speed stands in for it) and the ball is genuinely in play at the paddle
+				local SH = Config.ArmLayer.SmashHop
+				local smashTry = SH ~= nil and SH.Enabled and pr.kind == "normal" and pr.contact ~= nil
+					and pr.reason ~= "ball never in reach" and ShotInput.smashEligible(pr.contact, 1)
+					and (g.stats.maxSpeed or 0) >= SH.OnsetSpeed
+				fire("onset", { stroke = self.stroke, contactT = contactT, contact = pr.contact, aim = self.aim, kind = pr.kind, quality = pr.quality, smash = smashTry })
+			end
+		end
+		if flick then
+			swing(flick)
 		end
 	end
 	local function refScale(): number?
@@ -535,38 +615,40 @@ function ShotController.start(player: Player)
 	-- ---------- resets ----------
 	player.CharacterAdded:Connect(function()
 		reset("respawned")
-		if self.mouse then
-			self.mouse:reset()
-		end
 	end)
-	UserInputService.WindowFocusReleased:Connect(function()
+	local function dropFocus(why: string)
 		if self.state == STATE.COMMITTED then
-			reset("window lost focus")
-			fire("cancel", { why = "window lost focus" })
-		end
-		dropCandidate("window lost focus")
-		if self.mouse then
-			self.mouse:reset()
+			reset(why)
+			fire("cancel", { why = why })
 		end
 		lastMousePos = nil -- (the first movement after focus returns is a jump, not movement)
 		holdMouse(false)
+	end
+	UserInputService.WindowFocusReleased:Connect(function()
+		dropFocus("window lost focus")
 	end)
 	UserInputService.WindowFocused:Connect(function()
 		lastMousePos = nil
 	end)
+	UserInputService.TextBoxFocused:Connect(function()
+		dropFocus("UI text focus")
+	end)
 
 	-- ---------- per frame ----------
 	-- Contact windows for the current ball, in SERVER time, computed EXACTLY like the server's: from the snapshot taken at
-	-- the opponent's hit (`incSnap`, the same state as the server's incomingState) with the anchor where the player stands
+	-- the opponent's hit (`incSnap`, the same state as the server's incomingState) with the reach where the player stands
 	-- NOW (the server judges with the root reported in the swing). A ball whose path misses the normal reach gets the
-	-- emergency ring's window instead.
+	-- emergency zone's window instead.
 	local incSnap: any = nil
 	local lastIncomingHits = -1
+	local smashCheckedHits = -2 -- (the ball whose smashability was sampled)
 	local function computeWindows(info: any, incoming: boolean, st: string)
 		local snap = BallView.getSnapshot()
-		local a, reach = reachNow()
-		self.nearWindow = nil
-		if serveToss() and snap and a then
+		if serveToss() and snap then
+			local a = serveAnchor()
+			if not a then
+				return
+			end
 			-- your toss's contact phase (server time; RELEASE times = contact - HitDelay, as ServeRules returns them)
 			local w = ServeRules.phase(snap.state, a, S.PaddleReach)
 			self.window = w and {
@@ -578,7 +660,10 @@ function ShotController.start(player: Player)
 				idealPosition = w.idealPosition,
 			} :: any or nil
 			self.outerWindow = nil
-		elseif incoming and snap and a and info.mode == "free" and (st == STATE.IDLE or st == STATE.COMMITTED) then
+			return
+		end
+		local a, reach = reachNow(false)
+		if incoming and snap and a and info.mode == "free" and (st == STATE.IDLE or st == STATE.COMMITTED) then
 			local src, bounced = snap, snap.b >= 1
 			if incSnap and incSnap.t <= snap.t then
 				src, bounced = incSnap, (incSnap.b or 0) >= 1
@@ -586,107 +671,29 @@ function ShotController.start(player: Player)
 			local w = ShotInput.contactWindow(src.state, a, reach, bounced)
 			if w then
 				self.window = ShotInput.shiftWindow(w, src.t) -- (absolute server times; keeps an earlier in-reach pass)
+				-- (animation only) can this ball be SMASHED somewhere in its window? Sampled once per ball: drives the smash
+				-- windup while committed (StancePose)
+				if smashCheckedHits ~= lastIncomingHits then
+					smashCheckedHits = lastIncomingHits
+					self.smashable = false
+					local win = self.window :: any
+					for k = 0, 6 do
+						local st = ballAt(win.enter + (win.exit - win.enter) * k / 6)
+						if st and ShotInput.smashEligible(st.position, 1) then
+							self.smashable = true
+							break
+						end
+					end
+				end
 				self.outerWindow = nil
 			else
 				self.window = nil
-				-- (the save ring keeps the falling-ball rule, exactly like the server's judge)
-				local ow = if E.Enabled then ShotInput.contactWindow(src.state, a, ShotInput.emergencyReach(S), bounced, nil, true) else nil
+				-- (the emergency zone keeps the falling-ball rule, exactly like the server's judge)
+				local oa, oreach = reachNow(true)
+				local ow = if E.Enabled and oa then ShotInput.contactWindow(src.state, oa, oreach, bounced, nil, true) else nil
 				self.outerWindow = ShotInput.shiftWindow(ow, src.t)
-				if MOUSE_ONLY and not ow then
-					-- (mouse-only attempt zone only: when the ball passes near enough for an out-of-reach attempt to count)
-					self.nearWindow = ShotInput.shiftWindow(ShotInput.contactWindow(src.state, a, MO.NearReach, bounced), src.t)
-				end
 			end
 		end
-	end
-
-	-- ---------- MOUSE-ONLY rally (RallyInput = "MouseOnly") ----------
-	-- The attempt zone: a flick whose contact moment (server time) falls in it can be a swing; outside, it is preparation.
-	local function zoneContains(contactT: number): boolean
-		local w = self.window or self.outerWindow or self.nearWindow
-		if not w then
-			return false
-		end
-		local first = (w.earlier or w).ideal
-		return contactT >= first - MO.AttemptLead and contactT <= w.ideal + MO.AttemptTrail
-	end
-	local function applySnapshot(snap: any)
-		self.locked = true
-		self.aim, self.profile, self.prepU, self.prepV = snap.aim, snap.profile, snap.u, snap.v
-		setStroke(snap.stroke, true)
-		computeWindows(BallView.getInfo(), incomingNow(), self.state) -- (the snapshot's stroke reaches from its own anchor)
-	end
-	dropCandidate = function(why: string)
-		if not self.candidate then
-			return
-		end
-		self.candidate = nil
-		if self.state == STATE.IDLE then
-			self.locked = false
-			updatePrep() -- back to the live cursor (e.g. the end of a fast stance switch)
-		end
-		fire("onsetEnd", { why = why })
-	end
-	local function ignore(why: string, flick: any?)
-		self.lastIgnored = { why = why, at = os.clock(), flick = flick }
-		fire("candidate", { outcome = why, flick = flick })
-	end
-	-- A recognised flick inside the zone: commit the preparation from just before it and swing (the click-and-flick path).
-	local function mouseSwing(flick: FlickGesture.Flick)
-		local snap = if self.candidate then self.candidate.snap else prepAt(flick.onsetEventT)
-		self.candidate = nil -- (the wind-up turns into the swing: no onsetEnd)
-		self.serving = false
-		self.commitAt = flick.startT
-		self.commitServer = toServer(flick.startT)
-		clearFlick()
-		self.state = STATE.COMMITTED
-		applySnapshot(snap)
-		fire("commit", {
-			stroke = self.stroke,
-			aim = self.aim,
-			profile = self.profile,
-			serve = false,
-			fx = snap.fx,
-			fy = snap.fy,
-			incoming = true,
-			mouseOnly = true,
-		})
-		swing(flick)
-	end
-	local function handleMouse(ev: any)
-		if not ev then
-			return
-		end
-		if ev.kind == "onset" then
-			if zoneContains(toServer(ev.startT) + F.ContactDelay) then
-				local snap = prepAt(ev.onsetEventT)
-				self.candidate = { snap = snap, startT = ev.startT }
-				applySnapshot(snap)
-				fire("onset", { stroke = snap.stroke })
-			else
-				self.mouse:reject()
-				ignore("outside the swing zone")
-			end
-		elseif ev.kind == "flick" then
-			local fl = ev.flick :: FlickGesture.Flick
-			if zoneContains(toServer(fl.startT) + F.ContactDelay) then
-				mouseSwing(fl)
-			else
-				dropCandidate("outside the swing zone")
-				ignore("outside the swing zone", fl)
-			end
-		elseif ev.kind == "discard" then
-			dropCandidate(ev.reason)
-			ignore(if ev.reason == "sweep" then "reposition (sweep)" else ev.reason, ev.flick)
-		end
-	end
-	onMouseOnlyMove = function(now: number, tPrev: number, dx: number, dy: number)
-		if self.armed and self.mouse and self.state == STATE.IDLE then
-			handleMouse(self.mouse:add(now, tPrev, dx, dy))
-		end
-	end
-	if MOUSE_ONLY then
-		self.mouse = MouseSwing.new()
 	end
 
 	RunService.Heartbeat:Connect(function()
@@ -717,6 +724,10 @@ function ShotController.start(player: Player)
 				if flick then
 					swing(flick)
 				elseif (self.gesture :: FlickGesture.Detector).state == "invalid" then
+					if self.onsetFired then
+						self.onsetFired = false
+						fire("onsetEnd", { why = "invalid flick" })
+					end
 					self.gesture = FlickGesture.new() -- an invalid sample: start the measurement over (still committed)
 				end
 			end
@@ -746,25 +757,6 @@ function ShotController.start(player: Player)
 		end
 
 		computeWindows(info, incoming, self.state)
-
-		-- MOUSE-ONLY: listen while a ball is coming to you and you are preparing (never during your serve, a swing or
-		-- recovery); a fresh classifier for every ball, so nothing held carries into the next one
-		if MOUSE_ONLY then
-			local armedNow = self.state == STATE.IDLE and incoming and info.mode == "free" and not info.serve and not self.serving
-			if armedNow ~= self.armed then
-				if not armedNow then
-					dropCandidate("not armed")
-				end
-				self.mouse:reset()
-				self.armed = armedNow
-			end
-			if armedNow then
-				handleMouse(self.mouse:update(now))
-				self.inZone = zoneContains(workspace:GetServerTimeNow() + F.ContactDelay)
-			else
-				self.inZone = false
-			end
-		end
 	end)
 
 	-- (prediction helper for feedback: the launch the server would compute for the last swing, from the same inputs)
@@ -778,13 +770,13 @@ function ShotController.start(player: Player)
 			local side = math.clamp(self.sidespin * E.SpinFactor, -E.MaxSpin, E.MaxSpin)
 			return ShotLaunch.emergencyLob(pr.contact, self.aim, top, side, "Player")
 		end
-		local a = self.anchor()
+		local r = self.reach(false)
 		local top, side = self.topspin, self.sidespin
 		local smash = ShotInput.smashEligible(pr.contact, self.power)
 		local opts: ShotLaunch.Options = {
 			stroke = self.stroke,
 			timing = if pr.offset then ShotInput.timingValue(pr.offset) else nil,
-			stretch = if a then Vector2.new(pr.contact.X - a.X, pr.contact.Z - a.Z).Magnitude / S.PaddleReach else 0,
+			stretch = if r then ShotInput.reachStretch(r, pr.contact) else 0,
 			smash = smash,
 			aim = self.aim,
 			profile = self.profile,
@@ -793,14 +785,20 @@ function ShotController.start(player: Player)
 			top, side = top * S.WeakSpinFactor, side * S.WeakSpinFactor
 			opts.speedFactor = S.WeakSpeedFactor
 		end
+		-- RALLY PACE: the same factor as the server (this return's number = the hit count at the swing)
+		if not smash and self.swingHits then
+			opts.speedFactor = (opts.speedFactor or 1) * ShotLaunch.rallyPaceFactor(self.swingHits, ShotLaunch.speedFor(self.power))
+		end
 		return ShotLaunch.compute(pr.contact, self.power, top, side, opts)
 	end
 
 	if S.ShowDiagnostics then
 		-- Development-only bridge for Studio test scripts (a separate Lua context):
 		-- Invoke("get") -> snapshot; "press" / "release" / "cancel" simulate the left button; "move", Vector2 feeds one
-		-- relative movement sample (ref px; optional 3rd arg = seconds since the previous frame); "pointer", Vector2
-		-- overrides the cursor (screen fractions; nil = the real mouse); "blur" = focus loss.
+		-- relative movement sample (ref px; optional 3rd arg = seconds since the previous frame); "drag", Vector2 moves the
+		-- cursor override by that many ref px AND feeds the sample (a free cursor); "pointer", Vector2 overrides the cursor
+		-- (screen fractions; nil = the real mouse); "q" = the Q key (rally stroke selection); "blur" = focus loss;
+		-- "probe" = where the incoming ball passes closest to the current reach point (tests stand the character there).
 		local bridge = Instance.new("BindableFunction")
 		bridge.Name = "NotPongShotDebug"
 		bridge.OnInvoke = function(cmd: string, arg: any, arg2: any)
@@ -811,55 +809,58 @@ function ShotController.start(player: Player)
 			elseif cmd == "cancel" then
 				onButton(nil, Enum.UserInputState.Cancel)
 			elseif cmd == "move" and typeof(arg) == "Vector2" then
-				-- one relative movement sample (ref px) through the same path as a real mouse event (both modes)
 				local now = os.clock()
 				onMovement(now, now - (if typeof(arg2) == "number" then arg2 else 1 / 60), arg.X, arg.Y)
 			elseif cmd == "drag" and typeof(arg) == "Vector2" then
-				-- TESTS: a FREE cursor movement: moves the cursor override by `arg` ref px (so the preparation follows it, as
-				-- with a real mouse) and feeds the same movement sample. Starts from the current override (or the centre).
 				local camera = workspace.CurrentCamera
 				local size = camera and camera.ViewportSize or Vector2.new(1920, 1080)
 				local k = refScale() or 1
 				local p = self.pointerOverride or Vector2.new(0.5, 0.5)
-				local nx = math.clamp(p.X + arg.X / k / size.X, 0, 1)
-				local ny = math.clamp(p.Y + arg.Y / k / size.Y, 0, 1)
-				local real = Vector2.new((nx - p.X) * size.X * k, (ny - p.Y) * size.Y * k) -- (clamped at the screen edge)
-				self.pointerOverride = Vector2.new(nx, ny)
-				local now = os.clock()
-				if real.Magnitude > 0 then
-					onMovement(now, now - (if typeof(arg2) == "number" then arg2 else 1 / 60), real.X, real.Y)
+				if not mouseHeld then -- (a held cursor does not move; the movement is still measured)
+					local nx = math.clamp(p.X + arg.X / k / size.X, 0, 1)
+					local ny = math.clamp(p.Y + arg.Y / k / size.Y, 0, 1)
+					self.pointerOverride = Vector2.new(nx, ny)
 				end
+				local now = os.clock()
+				onMovement(now, now - (if typeof(arg2) == "number" then arg2 else 1 / 60), arg.X, arg.Y)
 				if not self.locked then
 					updatePrep()
 				end
+			elseif cmd == "armCfg" then
+				-- DEV / REVIEW: set a Config.ArmLayer.Strokes value in the GAME's config instance (e.g. FreezeAt)
+				Config.ArmLayer.Strokes[arg] = arg2
+				return Config.ArmLayer.Strokes[arg]
+			elseif cmd == "hopCfg" then
+				-- DEV / REVIEW: set a Config.ArmLayer.SmashHop value in the GAME's config instance (e.g. TimeScale, FreezeAt)
+				Config.ArmLayer.SmashHop[arg] = arg2
+				return Config.ArmLayer.SmashHop[arg]
+			elseif cmd == "q" then
+				return toggleStroke()
 			elseif cmd == "pointer" then
 				self.pointerOverride = if typeof(arg) == "Vector2" then arg else nil
 				updatePrep()
 			elseif cmd == "blur" then
-				if self.state == STATE.COMMITTED then
-					reset("window lost focus")
-					fire("cancel", { why = "window lost focus" })
-				end
-				dropCandidate("window lost focus")
-				if self.mouse then
-					self.mouse:reset()
-				end
-				lastMousePos = nil
-				holdMouse(false)
+				dropFocus("window lost focus")
 			elseif cmd == "probe" then
-				-- TESTS ONLY: where the incoming ball's legal path passes closest to the current anchor (any distance), so a
-				-- test script can stand the character there. Returns { position, t (server time), anchor } or nil.
+				-- TESTS ONLY: where the incoming ball's legal path passes closest to the current reach point (any distance).
 				local snap = incSnap or BallView.getSnapshot()
-				local a = self.anchor()
-				if not snap or not a or not incomingNow() then
+				local r = self.reach(false)
+				if not snap or not r or not incomingNow() then
 					return nil
 				end
-				local w = ShotInput.contactWindow(snap.state, a, if typeof(arg) == "number" then arg else 80, (snap.b or 0) >= 1)
+				local big: any
+				if typeof(r) == "table" then
+					big = table.clone(r)
+					big.side, big.front, big.back = 80, 80, 80
+				else
+					big = r
+				end
+				local w = ShotInput.contactWindow(snap.state, big, if typeof(arg) == "number" then arg else 80, (snap.b or 0) >= 1)
 				local st = snap.state
 				return w and {
 					position = w.idealPosition,
 					t = snap.t + w.ideal,
-					anchor = a,
+					anchor = ShotInput.reachPoint(r),
 					stroke = self.stroke,
 					state = { p = st.position, v = st.velocity, w = st.spin },
 					snapT = snap.t,
@@ -873,6 +874,7 @@ function ShotController.start(player: Player)
 			return {
 				state = self.state,
 				stroke = self.stroke,
+				selectedStroke = self.selectedStroke,
 				strokeLocked = self.strokeLocked,
 				aim = self.aim,
 				profile = self.profile,
@@ -885,6 +887,7 @@ function ShotController.start(player: Player)
 				topspin = self.topspin,
 				sidespin = self.sidespin,
 				flickSpeed = self.flick and self.flick.speed or nil,
+				flickClosedBy = self.flick and self.flick.closedBy or nil,
 				result = self.lastResult,
 				reason = self.lastReason,
 				kind = self.lastKind,
@@ -905,27 +908,19 @@ function ShotController.start(player: Player)
 				buttonDown = self.buttonDown,
 				armSolve = self.lastArmSolve, -- (set by the StancePose arm layer at each swing)
 				armEnabled = self.armEnabled(),
-				-- mouse-only
-				rallyInput = self.rallyInput,
-				armed = self.armed,
-				inZone = self.inZone,
-				zoneWindow = if self.window then "normal" elseif self.outerWindow then "emergency" elseif self.nearWindow then "near" else "none",
-				zoneFrom = (function()
-					local zw = self.window or self.outerWindow or self.nearWindow
-					return zw and ((zw.earlier or zw).ideal - MO.AttemptLead - now) or nil
-				end)(),
-				zoneTo = (function()
-					local zw = self.window or self.outerWindow or self.nearWindow
-					return zw and (zw.ideal + MO.AttemptTrail - now) or nil
-				end)(),
-				candidate = self.candidate ~= nil,
-				classifier = self.mouse and self.mouse.state or nil,
-				classifierStats = self.mouse and table.clone(self.mouse.stats) or nil,
-				lastIgnored = self.lastIgnored and self.lastIgnored.why or nil,
-				lastIgnoredAt = self.lastIgnored and self.lastIgnored.at or nil,
-				pointer = self.pointerOverride,
+				onsetFired = self.onsetFired,
+				clientSmash = self.clientSmash,
+				smashable = self.smashable,
+				lastCockAt = self.lastCockAt,
+				serverSmash = self.serverSmash,
+				clientContact = self.predicted and self.predicted.contact or nil,
+				serverContact = self.serverContact,
+				lastHop = self.lastHop and table.clone(self.lastHop) or nil, -- (set by the stance layer) the last smash hop
+				trace = self.trace and table.clone(self.trace) or nil,
+				contactModel = self.contactModel,
 				seq = self.seq,
-				commitAim = self.aim,
+				pointer = self.pointerOverride,
+				ballHit = BallView.hitDebug(),
 			}
 		end
 		bridge.Parent = player -- (not PlayerGui: a respawn clears PlayerGui)

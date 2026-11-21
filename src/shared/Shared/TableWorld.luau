@@ -6,6 +6,7 @@
 
 local Config = require(script.Parent:WaitForChild("Config"))
 local BallPhysics = require(script.Parent:WaitForChild("BallPhysics"))
+local CourtShape = require(script.Parent:WaitForChild("CourtShape"))
 
 local L, T, N = Config.Layout, Config.Table, Config.Net
 local O = L.TableSurfaceCenter
@@ -37,6 +38,28 @@ TableWorld.world = {
 	},
 	floorY = L.FloorY,
 } :: BallPhysics.World
+
+-- (2026-11-21 coastal pier) The ball's ground follows the visible pier (Shared/CourtShape: the same radii and height
+-- function PierBuilder builds): court + rim flat at FloorY, the glass / trim / promenade on the shared slope, the beach
+-- below. Beyond the pier the dead-ball moment stays where the old floor plane was (BallPhysics.Ground.outY).
+do
+	local P = Config.Pier
+	if P and P.BallGround and Config.Platform.Shape == "Disc" then
+		local rr = CourtShape.pierRadii()
+		local c = L.PlatformCenter
+		TableWorld.world.ground = {
+			cx = c.X,
+			cz = c.Z,
+			floorY = L.FloorY + (P.RimLift or 0),
+			flatR = rr.rimOut,
+			slope = P.RiseSlope,
+			outerR = rr.promOut,
+			beachY = P.BeachTopY,
+			edgeDepth = P.PromenadeThickness,
+			outY = L.FloorY,
+		}
+	end
+end
 
 TableWorld.physics = Config.BallPhysics :: BallPhysics.Config
 TableWorld.netTopY = L.SurfaceY + N.Height

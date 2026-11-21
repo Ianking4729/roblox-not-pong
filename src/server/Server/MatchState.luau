@@ -191,6 +191,17 @@ function MatchState:rematch(): (boolean, string?)
 	return self:transition(State.ReadyToServe, "rematch")
 end
 
+-- (Pass 13) A finished match's scores cleared without a state change: used when a competitor arrives after a match ended
+-- (WaitingForPlayer -> ReadyToServe must start from 0-0, not from the old game-over score).
+function MatchState:clearIfGameOver()
+	if self:isGameOver() then
+		self.scorePlayer, self.scoreBot = 0, 0
+		self.server = Config.Match.FirstServer
+		self.rallyHits = 0
+		self.lastHitter = nil
+	end
+end
+
 -- Any state -> WaitingForPlayer (a competitor left). Keeps the score.
 function MatchState:suspend(reason: string?): (boolean, string?)
 	if self.state == State.WaitingForPlayer then

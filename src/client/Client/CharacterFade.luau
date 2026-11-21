@@ -20,10 +20,10 @@ local PlatformZone = require(script.Parent:WaitForChild("PlatformZone"))
 
 local CharacterFade = {}
 
--- Signed distance from the platform's edge in its own XZ plane: positive = inside, negative = outside.
+-- Signed distance from the platform's edge: positive = inside, negative = outside (same as PlatformZone; the court is a
+-- disc since 2026-11-21).
 function CharacterFade.insideDistance(platform: BasePart, position: Vector3): number
-	local l = platform.CFrame:PointToObjectSpace(position)
-	return math.min(platform.Size.X / 2 - math.abs(l.X), platform.Size.Z / 2 - math.abs(l.Z))
+	return PlatformZone.insideDistance(platform, position)
 end
 
 function CharacterFade.start(player: Player)

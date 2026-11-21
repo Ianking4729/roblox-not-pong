@@ -19,7 +19,8 @@ from PIL import Image
 ROOT = os.path.join(os.path.dirname(__file__), "..", "assets", "ball")
 SRC = os.path.join(os.path.dirname(__file__), "..", "docs", "Not pong obsidian vault", "Screenshot 2026-11-17 034156.png")
 W, H = 4096, 2048
-LOGO_LON = 92.0  # degrees of longitude the logo spans (the guide shows it filling about half of the visible disc)
+LOGO_LON = 92.0 * 0.7  # degrees of longitude the logo spans (2026-11-19 Pass 12: 70% of the previous 92; the old overlay
+#                       is kept in assets/ball/backup/ball_logo_overlay_v1_92deg_2026-11-19.png)
 
 os.makedirs(ROOT, exist_ok=True)
 shutil.copyfile(SRC, os.path.join(ROOT, "ball_logo_source.png"))

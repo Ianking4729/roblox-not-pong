@@ -10,6 +10,10 @@
 --   * a flat ring on the table at the predicted landing, and a "NET" / "OUT" label when the shot is predicted to fail
 --     (the whole arrow then turns BadColor).
 -- The drawn points ease toward each new prediction (Smoothing), so power/spin changes animate instead of jumping.
+-- PROGRESSIVE REVEAL (Config.Feedback.Arrow.Reveal, 2026-11-18): a new shot draws from the contact point to the
+-- predicted landing in RevealTime (the head rides the leading edge; the landing ring and NET / OUT label appear when it
+-- arrives), holds HoldTime, then fades over FadeTime and hides itself. An update (the server's own launch) eases in
+-- without restarting the drawing.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -157,6 +161,8 @@ function TrajectoryArrow.new(playerGui: Instance)
 	local weak = false
 	local smash = false -- a smash is lined up: gold arrow + "SMASH" label (red NET / OUT still wins)
 	local SMASH_COLOR = Config.ShotControl.SmashColor
+	-- progressive reveal (A.Reveal): os.clock() the drawing started; the hold / fade follow the full reveal
+	local revealStart = -math.huge
 
 	local self = {}
 
@@ -165,10 +171,15 @@ function TrajectoryArrow.new(playerGui: Instance)
 	end
 
 	-- points: the simulated path (contact ... first contact). resultKind: "ok" | "net" | "own" | "out".
-	function self.set(points: { Vector3 }, resultKind: string, isWeak: boolean)
+	-- opts.reveal = true: a NEW shot, drawn progressively from the contact point (A.Reveal); otherwise an update of the
+	-- current shot (e.g. the server's own launch) that eases in without restarting the reveal.
+	function self.set(points: { Vector3 }, resultKind: string, isWeak: boolean, opts: { reveal: boolean? }?)
 		if #points < 2 then
 			self.hide()
 			return
+		end
+		if opts and opts.reveal then
+			revealStart = os.clock()
 		end
 		local tip = points[#points]
 		resample(points, N + 1, A.HeadLength, scratch)
@@ -213,8 +224,28 @@ function TrajectoryArrow.new(playerGui: Instance)
 		return shown
 	end
 
+	-- (reveal) progress 0..1 of the drawing, and the overall opacity (1 = full, 0 = faded out) for this frame
+	local function revealState(): (number, number)
+		if not A.Reveal then
+			return 1, 1
+		end
+		local now = os.clock()
+		local s = math.clamp((now - revealStart) / math.max(A.RevealTime, 1e-3), 0, 1)
+		local after = now - (revealStart + A.RevealTime + A.HoldTime)
+		local alpha = 1 - math.clamp(after / math.max(A.FadeTime, 1e-3), 0, 1)
+		return s, alpha
+	end
+	function self.revealProgress(): (number, number)
+		return revealState()
+	end
+
 	function self.step(dt: number)
 		if not visible or #goal < N + 2 then
+			return
+		end
+		local progress, alpha = revealState()
+		if alpha <= 0 then
+			self.hide() -- the reveal held and faded: done (the real ball's trail shows the actual flight)
 			return
 		end
 		local f = if snap then 1 else 1 - math.exp(-A.Smoothing * dt)
@@ -223,6 +254,38 @@ function TrajectoryArrow.new(playerGui: Instance)
 			local g = goal[i]
 			shown[i] = if shown[i] then (shown[i] :: Vector3):Lerp(g, f) else g
 			attachments[i].Position = shown[i]
+		end
+		-- the drawing's leading edge: segments up to `edgeIdx` are drawn, the current one partly, the head rides the edge
+		local revealing = progress < 1
+		local edgeIdx = progress * N -- 0..N along the (equal arc-length) resampled path
+		local full = math.floor(edgeIdx)
+		local frac = edgeIdx - full
+		if revealing then
+			local i = math.clamp(full + 1, 1, N)
+			local edge = (shown[i] :: Vector3):Lerp(shown[i + 1] :: Vector3, frac)
+			attachments[i + 1].Position = edge -- (the partial segment ends at the edge)
+			-- head from a point HeadLength back along the path to the edge
+			local back = edge
+			local need = A.HeadLength
+			local j = i
+			local from = edge
+			while need > 0 and j >= 1 do
+				local p = shown[j] :: Vector3
+				local d = (from - p).Magnitude
+				if d >= need then
+					back = from:Lerp(p, need / math.max(d, 1e-6))
+					need = 0
+				else
+					need -= d
+					back = p
+					from = p
+					j -= 1
+				end
+			end
+			if full + 1 < N then -- (the head's own attachments are free while the end of the path is not drawn yet)
+				attachments[N + 1].Position = back
+				attachments[N + 2].Position = edge
+			end
 		end
 
 		local risky = kind == "risky" -- lands now, but a moment later would not / right on an edge (ShotFeedback)
@@ -233,40 +296,49 @@ function TrajectoryArrow.new(playerGui: Instance)
 		local extra = if weak then A.WeakTransparency else 0
 		local core = ColorSequence.new(color)
 		local glow = ColorSequence.new(glowColor)
+		local function faded(t: number): number
+			return 1 - (1 - math.clamp(t, 0, 1)) * alpha
+		end
 		for i = 1, N do
 			-- fade in over the first StartFade of the path (keeps the paddle and the ball readable)
 			local t0, t1 = (i - 1) / N, i / N
 			local fade0 = 1 - math.clamp(t0 / math.max(A.StartFade, 1e-3), 0, 1)
 			local fade1 = 1 - math.clamp(t1 / math.max(A.StartFade, 1e-3), 0, 1)
 			local function tr(base: number, fade: number): number
-				return math.clamp(base + extra + (1 - base) * fade * 0.9, 0, 1)
+				return faded(base + extra + (1 - base) * fade * 0.9)
 			end
 			local c, g = cores[i], glows[i]
-			c.Color, g.Color = core, glow
-			c.Transparency = NumberSequence.new(tr(A.CoreTransparency, fade0), tr(A.CoreTransparency, fade1))
-			g.Transparency = NumberSequence.new(tr(A.GlowTransparency, fade0), tr(A.GlowTransparency, fade1))
-			c.Width0, c.Width1 = A.Width, A.Width
-			g.Width0, g.Width1 = A.GlowWidth, A.GlowWidth
-			c.Enabled, g.Enabled = true, true
+			local drawn = not revealing or i <= full + 1
+			if drawn then
+				c.Color, g.Color = core, glow
+				c.Transparency = NumberSequence.new(tr(A.CoreTransparency, fade0), tr(A.CoreTransparency, fade1))
+				g.Transparency = NumberSequence.new(tr(A.GlowTransparency, fade0), tr(A.GlowTransparency, fade1))
+				c.Width0, c.Width1 = A.Width, A.Width
+				g.Width0, g.Width1 = A.GlowWidth, A.GlowWidth
+			end
+			c.Enabled, g.Enabled = drawn, drawn
 		end
+		local headOn = not revealing or full + 1 < N
 		head.Color, headGlow.Color = core, glow
-		head.Transparency = NumberSequence.new(math.clamp(A.CoreTransparency + extra, 0, 1))
-		headGlow.Transparency = NumberSequence.new(math.clamp(A.GlowTransparency + extra, 0, 1))
+		head.Transparency = NumberSequence.new(faded(A.CoreTransparency + extra))
+		headGlow.Transparency = NumberSequence.new(faded(A.GlowTransparency + extra))
 		head.Width0, head.Width1 = A.HeadWidth, 0
 		headGlow.Width0, headGlow.Width1 = A.HeadWidth * 1.7, 0
-		head.Enabled, headGlow.Enabled = true, true
+		head.Enabled, headGlow.Enabled = headOn, headOn
 
 		local tip = shown[N + 2]
-		local onTable = kind == "ok" or kind == "own" or risky
+		local onTable = (kind == "ok" or kind == "own" or risky) and not revealing
 		ringGui.Enabled = onTable
 		if onTable then
 			ringPart.CFrame = CFrame.new(tip.X, tip.Y - Config.Ball.Radius + 0.06, tip.Z)
 			ringStroke.Color = color
 			ring.BackgroundColor3 = glowColor
-			ringStroke.Transparency = 0.1 + extra
+			ringStroke.Transparency = faded(0.1 + extra)
+			ring.BackgroundTransparency = faded(0.6)
 		end
-		billboard.Enabled = bad or smash or risky
-		if bad or smash or risky then
+		billboard.Enabled = (bad or smash or risky) and not revealing
+		text.TextTransparency = faded(0)
+		if (bad or smash or risky) and not revealing then
 			labelPart.CFrame = CFrame.new(tip)
 			local what = if risky then "RISKY" elseif not bad then "" elseif kind == "net" then "NET" elseif kind == "own" then "OWN SIDE" else "OUT"
 			text.Text = if smash and (bad or risky) then "SMASH " .. what elseif smash then "SMASH" else what

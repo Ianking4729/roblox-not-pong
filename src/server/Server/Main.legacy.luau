@@ -40,6 +40,7 @@ local function refreshReadiness()
 	local seated = AvatarService.getSeatedPlayer()
 	if seated and botReady then
 		if match:getState() == GameStates.State.WaitingForPlayer then
+			match:clearIfGameOver() -- (Pass 13) a player arriving after a finished match starts at 0-0
 			match:markReady()
 		end
 	else

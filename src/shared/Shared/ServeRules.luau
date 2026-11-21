@@ -12,6 +12,7 @@
 local Config = require(script.Parent:WaitForChild("Config"))
 local BallPhysics = require(script.Parent:WaitForChild("BallPhysics"))
 local TableWorld = require(script.Parent:WaitForChild("TableWorld"))
+local CourtShape = require(script.Parent:WaitForChild("CourtShape"))
 
 local ServeRules = {}
 
@@ -51,30 +52,47 @@ function ServeRules.postureStroke(posture: string?): string
 	return if ServeRules.posture(posture) == "RightLead" then "Backhand" else "Forehand"
 end
 
--- The legal region for the RELEASE POINT (the ball's position as it leaves the hand), from the table and platform.
+-- The platform's footprint BOUNDS (studs, world X / Z), from Config.Layout.PlatformCenter and Config.Platform.Size. Since
+-- 2026-11-21 the court is a disc: these are its bounding square (for outlines); on-court tests use CourtShape.
+function ServeRules.platformBounds(): Region
+	local pc, size = Config.Layout.PlatformCenter, Config.Platform.Size
+	return { minX = pc.X - size.X / 2, maxX = pc.X + size.X / 2, minZ = pc.Z - size.Z / 2, maxZ = pc.Z + size.Z / 2 }
+end
+
+-- The legal region for the RELEASE POINT (the ball's position as it leaves the hand) (2026-11-19 Pass 12): ANYWHERE on
+-- the platform behind the player's own end line, beyond either side line included. Derived from the platform's real
+-- bounds and the court-relative end line (by at least the ball's radius): no radius, no lateral or depth allowance.
 function ServeRules.region(): Region
-	local S = Config.Serve
-	local c = TableWorld.center
+	local b = ServeRules.platformBounds()
 	local endZ = TableWorld.endLineZ("Player")
-	local platformBack = Config.Layout.PlatformCenter.Z + Config.Platform.Size.Z / 2
+	local toward = TableWorld.towardSide("Player") -- +1: the player's side is +Z (behind = larger Z)
+	local front = endZ + toward * Config.Ball.Radius
+	local back = if toward > 0 then b.maxZ else b.minZ
 	return {
-		minX = c.X - TableWorld.halfWidth - S.CornerAllowance,
-		maxX = c.X + TableWorld.halfWidth + S.CornerAllowance,
-		minZ = endZ + Config.Ball.Radius,
-		maxZ = math.min(endZ + S.RegionDepth, platformBack - Config.PlayArea.BodyMarginZ),
+		minX = b.minX,
+		maxX = b.maxX,
+		minZ = math.min(front, back),
+		maxZ = math.max(front, back),
 	}
 end
 
--- May the player toss from here? Returns ok, reason (for the player), and the release point.
+-- May the player toss from here? Returns ok, reason (for the player), and the release point. The release point must be
+-- in the region and the character's root on the platform (server-authoritative: RallyService also requires the feet on
+-- the ground).
 function ServeRules.check(rootCFrame: CFrame, scale: number, posture: string?): (boolean, string, Vector3)
 	local r = ServeRules.region()
+	local b = ServeRules.platformBounds()
 	local p = ServeRules.handPoint(rootCFrame, scale, "release", posture)
-	if p.Z < r.minZ then
+	local root = rootCFrame.Position
+	local behind = (p.Z - TableWorld.endLineZ("Player")) * TableWorld.towardSide("Player")
+	if root.X < b.minX or root.X > b.maxX or root.Z < b.minZ or root.Z > b.maxZ then
+		return false, "stand on the court", p
+	elseif not CourtShape.contains(root) then
+		return false, "stand on the court", p
+	elseif behind < Config.Ball.Radius then
 		return false, "step back behind your end line", p
-	elseif p.Z > r.maxZ then
-		return false, "move closer to the table", p
-	elseif p.X < r.minX or p.X > r.maxX then
-		return false, "move in: serve from behind the table", p
+	elseif p.X < r.minX or p.X > r.maxX or p.Z < r.minZ or p.Z > r.maxZ or not CourtShape.contains(p) then
+		return false, "stay on the platform", p
 	end
 	return true, "ok", p
 end

@@ -4,11 +4,9 @@
 --                         the cursor; locked at the click) and a post whose height shows the drive (short) .. arc (tall)
 --                         profile. It is the base aim only: power and spin are not known before the flick, and spin will
 --                         bend the real flight away from it.
---   * Flick dial          where you clicked (the cursor is held there while committed): "FLICK" while waiting; after the
---                         flick its arrow shows the flick's direction = the spin (up = topspin, down = backspin, sideways
---                         = curve) and its length the spin strength.
---   * Power / Curve       after the flick: the power the flick's speed gave and the spin strength (never during a hold:
---                         holding adds nothing).
+--   * Cursor trace       (Client/CursorTrace) what the hand actually did while committed (replaced the old TOP / LEFT / RIGHT /
+--                         BACK spin dial, removed 2026-11-19).
+--   * Power               after the flick: the power the flick's speed gave (never during a hold: holding adds nothing).
 --   * Contact ring        (Client/ContactRing) a hollow ring round the incoming ball whose arc completes and turns green
 --                         while a flick right now would register (replaced the accuracy bar, 2026-11-17).
 --   * Verdict text        after the flick, the SERVER's verdict (CLEAN / WEAK . EARLY / WEAK . LATE / EARLY / LATE / MISS / SAVE).
@@ -32,11 +30,12 @@ local TrajectoryArrow = require(script.Parent:WaitForChild("TrajectoryArrow"))
 local PowerMeter = require(script.Parent:WaitForChild("PowerMeter"))
 local PlatformZone = require(script.Parent:WaitForChild("PlatformZone"))
 local ContactRing = require(script.Parent:WaitForChild("ContactRing"))
+local CursorTrace = require(script.Parent:WaitForChild("CursorTrace"))
 
 local ShotFeedback = {}
 
 local S, FB, Fl, P = Config.ShotControl, Config.Feedback, Config.Flick, Config.Prep
-local DIAL, TIMING, METER, AIM = FB.SpinDial, FB.Timing, FB.PowerMeter, FB.AimMarker
+local TIMING, METER, AIM = FB.Timing, FB.PowerMeter, FB.AimMarker
 
 -- ---------- small UI helpers ----------
 
@@ -147,38 +146,6 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	screen.DisplayOrder = 5
 	screen.Parent = playerGui
 
-	-- Flick dial (where you clicked)
-	local dial = frame(screen, "FlickDial", UDim2.fromOffset(DIAL.RadiusPixels * 2, DIAL.RadiusPixels * 2))
-	dial.Visible = false
-	local dialRing = frame(dial, "Ring", UDim2.fromScale(1, 1))
-	corner(dialRing)
-	local dialRingStroke = stroke(dialRing, 2, DIAL.IdleColor, 0.55)
-	local dialDot = frame(dial, "Dot", UDim2.fromOffset(10, 10))
-	corner(dialDot)
-	dialDot.BackgroundTransparency = 0
-	dialDot.BackgroundColor3 = DIAL.IdleColor
-	local dialArrow = frame(dial, "Arrow", UDim2.fromOffset(0, 5), nil, Vector2.new(0, 0.5))
-	dialArrow.BackgroundTransparency = 0
-	corner(dialArrow)
-	local dialHead = frame(dial, "Head", UDim2.fromOffset(13, 13))
-	dialHead.BackgroundTransparency = 0
-	dialHead.Rotation = 45
-	local dialText = label(dial, "Prompt", "FLICK", 14, UDim2.new(0.5, 0, 1, 10), Vector2.new(0.5, 0))
-	local R = DIAL.RadiusPixels
-	local hints = {
-		label(dial, "Top", "TOP", 11, UDim2.new(0.5, 0, 0, -9), Vector2.new(0.5, 1)),
-		label(dial, "Back", "BACK", 11, UDim2.new(0.5, 0, 1, 26), Vector2.new(0.5, 0)),
-		label(dial, "Left", "L", 11, UDim2.new(0, -8, 0.5, 0), Vector2.new(1, 0.5)),
-		label(dial, "Right", "R", 11, UDim2.new(1, 8, 0.5, 0), Vector2.new(0, 0.5)),
-	}
-	for _, h in hints do
-		h.Size = UDim2.fromOffset(48, 14)
-		h.TextTransparency = 0.45
-		h.TextStrokeTransparency = 0.7
-	end
-	hints[3].TextXAlignment = Enum.TextXAlignment.Right
-	hints[4].TextXAlignment = Enum.TextXAlignment.Left
-
 	-- Verdict text (CLEAN / WEAK / EARLY / LATE / MISS / SAVE!), shown briefly after a swing. (The old accuracy bar was
 	-- replaced by the contact ring, Client/ContactRing, on 2026-11-17.)
 	local resultLabel = label(screen, "Result", "", 24, UDim2.new(0.5, 0, 1, -TIMING.Offset), Vector2.new(0.5, 1))
@@ -202,9 +169,12 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	local function note(text: string)
 		devNote, devNoteUntil = text, os.clock() + 1.5
 	end
-	-- ---------- arrow + meter + aim marker ----------
+	-- ---------- arrow + meter + aim marker + cursor trace ----------
 	local arrow = TrajectoryArrow.new(playerGui)
 	local meter = PowerMeter.new(screen)
+	local trace = CursorTrace.new(screen, controller)
+	local REVEAL = Config.Feedback.Arrow.Reveal == true
+	local TRACE_ON = Config.Feedback.CursorTrace.Enabled == true
 	local markers = Instance.new("Folder")
 	markers.Name = "NotPongAimMarker"
 	markers.Parent = workspace.CurrentCamera
@@ -218,8 +188,7 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	local prediction: { kind: string, contact: Vector3, launch: any }? = nil
 	local meterUntil = -math.huge
 	local resultUntil = -math.huge
-	local dialUntil = -math.huge
-			local dialAt = Vector2.zero
+	local traceAt = Vector2.zero -- where the commitment was made (the cursor is held there)
 	local lastSwing: any = nil
 
 	local function showVerdict(text: string, color: Color3)
@@ -233,12 +202,19 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 	local committedLive = false -- the current commitment was made in a live rally (not your serve)
 	controller.on(function(event: string, data: any)
 		if event == "commit" then
-			dialAt = game:GetService("UserInputService"):GetMouseLocation()
+			traceAt = game:GetService("UserInputService"):GetMouseLocation()
 			resultLabel.TextTransparency = 1
 			resultLabel.TextStrokeTransparency = 1
 			committedLive = not data.serve and data.incoming == true -- (also set per frame once a ball comes during the hold)
+			trace.begin(traceAt)
 		elseif event == "cancel" or event == "reset" then
-			if controller.state == STATE.IDLE then
+			if event == "cancel" then
+				trace.cancel() -- (released / dropped without a flick: nothing was struck)
+			else
+				trace.dropIfLive() -- (a respawn / other reset ended the commitment: no live trace is left behind)
+			end
+			-- (with the reveal the arrow runs its own hold + fade; "reset" at the end of recovery must not cut it short)
+			if controller.state == STATE.IDLE and (not REVEAL or event == "cancel") then
 				arrow.hide()
 				prediction = nil
 			end
@@ -251,8 +227,8 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 					showVerdict("NO FLICK", TIMING.MissColor)
 				end
 			end
-		elseif event == "candidate" then
-			note("IGNORED: " .. tostring(data and data.outcome))
+		elseif event == "strokeSelect" then
+			note(if data.queued then ("Q: next stroke " .. string.upper(data.selected)) else ("Q: " .. string.upper(data.selected)))
 		elseif event == "swing" then
 			committedLive = false
 			if not data.serve then
@@ -260,18 +236,18 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 			end
 			lastSwing = data
 			meterUntil = os.clock() + METER.ShowAfterRelease
-			dialUntil = os.clock() + METER.ShowAfterRelease
+			trace.finish()
 			resultLabel.TextTransparency = 1
 			resultLabel.TextStrokeTransparency = 1
 			prediction = nil
 			arrow.hide()
-			-- the predicted flight from the actual inputs (the same shared launch as the server's)
+			-- the predicted flight from the actual inputs (the same shared launch as the server's), drawn progressively
 			if not data.serve and data.quality ~= "miss" and data.contact then
 				local ok, launch = pcall(controller.predictLaunch)
 				if ok and launch then
 					local res = ShotLaunch.predictPath(data.contact, launch.velocity, launch.spin, path, 2)
-					prediction = { kind = res.kind, contact = data.contact, launch = launch }
-					arrow.set(path, res.kind, false)
+					prediction = { kind = res.kind, contact = data.contact, launch = launch, seq = data.seq, server = false }
+					arrow.set(path, res.kind, false, { reveal = true })
 					arrow.setSmash(launch.how and string.find(launch.how, "smash") ~= nil or false)
 					arrow.setWeak(data.quality == "weak")
 				end
@@ -291,19 +267,34 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 					note(text)
 				end
 			end
-			if impactFx and (data.result == "clean" or data.result == "weak") then
+			if impactFx and not (Config.Feedback.ShotVfx and Config.Feedback.ShotVfx.Enabled) and (data.result == "clean" or data.result == "weak") then
 				local msg = data.msg
 				local at = (msg and typeof(msg.contact) == "Vector3" and msg.contact) or (BallView.getState() and BallView.getState().position)
 				if at then
 					impactFx.play(at, data.result)
 				end
 			end
-			-- the real ball takes over now (its trail shows the actual flight)
-			task.delay(0.15, function()
-				if controller.state ~= STATE.SWUNG then
-					arrow.hide()
+			if REVEAL then
+				local msg = data.msg
+				if data.result ~= "clean" and data.result ~= "weak" then
+					arrow.hide() -- no hit: no predicted flight to show
+					prediction = nil
+				elseif prediction and msg and typeof(msg.contact) == "Vector3" and typeof(msg.velocity) == "Vector3" and typeof(msg.spin) == "Vector3" then
+					-- redraw from the SERVER's own launch (eases in, keeps the reveal going): never a stale landing point
+					local res = ShotLaunch.predictPath(msg.contact, msg.velocity, msg.spin, path, 2)
+					prediction.kind, prediction.contact, prediction.server = res.kind, msg.contact, true
+					prediction.launch = { velocity = msg.velocity, spin = msg.spin, how = prediction.launch and prediction.launch.how }
+					arrow.set(path, res.kind, data.result == "weak", nil)
+					arrow.setSmash(msg.smash == true)
 				end
-			end)
+			else
+				-- the real ball takes over now (its trail shows the actual flight)
+				task.delay(0.15, function()
+					if controller.state ~= STATE.SWUNG then
+						arrow.hide()
+					end
+				end)
+			end
 		end
 	end)
 
@@ -344,8 +335,14 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 			aimRing.Transparency, aimPost.Transparency = 1, 1
 		end
 
-		-- Arrow: shown from the flick until the verdict (set by the "swing" event); step its easing.
-		if prediction and swung then
+		-- Arrow: from the flick; with the reveal it draws, holds and fades on its own (the real ball's trail takes over)
+		if REVEAL then
+			if arrow.isVisible() then
+				arrow.step(dt)
+			else
+				prediction = nil
+			end
+		elseif prediction and swung then
 			arrow.step(dt)
 		elseif not swung then
 			if prediction then
@@ -354,7 +351,10 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 			arrow.hide()
 		end
 
-		-- Power / curve: after the flick only.
+		-- the cursor trace (what the hand actually did while committed)
+		trace.step()
+
+		-- Power (and, if enabled, the old Curve bar): after the flick only.
 		local curve = math.sqrt(controller.topspin ^ 2 + controller.sidespin ^ 2) / math.max(S.MaxSpin, 1e-3)
 		if nowClock < meterUntil and lastSwing then
 			meter.set(true, controller.power, curve)
@@ -362,59 +362,22 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 			meter.set(false, 0, 0)
 		end
 
-		-- Flick dial
-		local showDial = committed or nowClock < dialUntil
-		dial.Visible = showDial
-		if showDial then
-			dial.Position = UDim2.fromOffset(dialAt.X, dialAt.Y)
-			local flicked = controller.flick ~= nil
-			dialText.Text = if flicked then ("%d%%"):format(math.floor(controller.power * 100 + 0.5)) else "FLICK"
-			local n = if flicked then clamp01(curve) else 0
-			if not flicked or n < 0.02 then
-				dialArrow.Visible, dialHead.Visible = false, false
-				dialDot.BackgroundColor3 = DIAL.IdleColor
-				dialRingStroke.Color = if committed then DIAL.HighColor else DIAL.IdleColor
-				dialRingStroke.Transparency = if committed then 0.25 else 0.6
-				dialRingStroke.Thickness = 2
-				dialDot.Size = UDim2.fromOffset(10, 10)
-			else
-				local color = DIAL.LowColor:Lerp(DIAL.HighColor, n)
-				local len = R * n
-				-- screen direction of the flick = the spin: x = -sidespin, y = -topspin (screen y grows downward)
-				local ang = math.atan2(-controller.topspin, -controller.sidespin)
-				dialArrow.Visible, dialHead.Visible = true, true
-				dialArrow.Rotation = math.deg(ang)
-				dialArrow.Size = UDim2.fromOffset(len, 3 + 3 * n)
-				dialArrow.BackgroundColor3 = color
-				dialHead.BackgroundColor3 = color
-				dialHead.Position = UDim2.new(0.5, math.cos(ang) * len, 0.5, math.sin(ang) * len)
-				dialDot.BackgroundColor3 = color
-				dialDot.Size = UDim2.fromOffset(8, 8)
-				dialRingStroke.Color = color
-				dialRingStroke.Transparency = 0.5 - 0.35 * n
-				dialRingStroke.Thickness = 2 + 2 * n
-			end
-		end
-
 		if devLabel then
-			local mode = if controller.rallyInput == "MouseOnly" then "MOUSE-ONLY" else "CLICK-TO-LOCK"
+			local strokeText = string.upper(controller.stroke or "?")
+			if controller.selectedStroke and controller.selectedStroke ~= controller.stroke and not controller.serving then
+				strokeText ..= "  (next: " .. string.upper(controller.selectedStroke) .. ")"
+			end
 			local now
 			if state == STATE.IDLE then
-				if controller.candidate then
-					now = "SWING ONSET..."
-				elseif controller.armed then
-					now = if controller.inZone then "PREPARING  (swing zone)" else "PREPARING  (ball coming)"
-				else
-					now = "PREPARING"
-				end
+				now = "PREPARING"
 			elseif committed then
-				now = if controller.serving then "SERVE: FLICK" else "LOCKED: FLICK"
+				now = if controller.serving then "COMMITTED: SERVE FLICK" elseif controller.onsetFired then "COMMITTED: SWING ONSET" else "COMMITTED: FLICK"
 			elseif state == STATE.SWUNG then
 				now = "SWING RECOGNIZED"
 			else
 				now = "RECOVERING"
 			end
-			devLabel.Text = ("[dev] rally input %s\n%s%s"):format(mode, now, if nowClock < devNoteUntil then "   |   " .. devNote else "")
+			devLabel.Text = ("[dev] %s  |  zone %s\n%s%s"):format(strokeText, tostring(controller.contactModel), now, if nowClock < devNoteUntil then "   |   " .. devNote else "")
 		end
 
 		if nowClock >= resultUntil and resultLabel.TextTransparency < 1 then
@@ -446,8 +409,11 @@ function ShotFeedback.start(player: Player, controller: any, extras: { impact: a
 				aimVisible = aimRing.Transparency < 1,
 				aimPosition = aimRing.Position,
 				aimPostHeight = aimPost.Size.Y,
-				dialVisible = dial.Visible,
-				dialText = dialText.Text,
+				reveal = { arrow.revealProgress() },
+				predictionFromServer = prediction and prediction.server or false,
+				trace = trace.debug(),
+				traceActive = trace.isActive(),
+				curveRowVisible = meter.curveFill and meter.curveFill.Parent and meter.curveFill.Parent.Visible,
 				ringVisible = ring.debug().visible,
 				ring = ring.debug(),
 				resultText = resultLabel.Text,

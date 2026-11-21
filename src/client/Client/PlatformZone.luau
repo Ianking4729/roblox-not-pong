@@ -14,6 +14,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local CourtShape = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("CourtShape"))
 
 local PlatformZone = {}
 
@@ -21,10 +22,10 @@ local listeners: { (boolean) -> () } = {}
 local onPlatform = true
 local started = false
 
--- Signed distance from the platform's edge in its own XZ plane: positive = inside, negative = outside.
+-- Signed horizontal distance from the platform's edge: positive = inside, negative = outside. (2026-11-21) The court is
+-- a disc (a Cylinder part) on the coastal pier, so the glass / promenade around it count as OFF the court (Shared/CourtShape).
 function PlatformZone.insideDistance(platform: BasePart, position: Vector3): number
-	local l = platform.CFrame:PointToObjectSpace(position)
-	return math.min(platform.Size.X / 2 - math.abs(l.X), platform.Size.Z / 2 - math.abs(l.Z))
+	return CourtShape.partInsideDistance(platform, position)
 end
 
 function PlatformZone.isOn(): boolean

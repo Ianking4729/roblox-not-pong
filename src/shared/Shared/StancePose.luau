@@ -18,6 +18,7 @@ local NotPongAnims = require(script.Parent:WaitForChild("NotPongAnims"))
 local PaddleArm = require(script.Parent:WaitForChild("PaddleArm"))
 local TableWorld = require(script.Parent:WaitForChild("TableWorld"))
 local ShotLaunch = require(script.Parent:WaitForChild("ShotLaunch"))
+local ShotInput = require(script.Parent:WaitForChild("ShotInput"))
 
 local StancePose = {}
 
@@ -549,6 +550,7 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 		local fade = S.ActivationBlendTime or 0.25
 		if on then
 			self.moveWeight, self.runWeight, stillFor = 0, 0, math.huge
+			self.airborne = false
 			playAll(fade)
 		else
 			stopAll(fade, upperTracks)
@@ -560,6 +562,7 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 		return current + (target - current) * (1 - math.exp(-rate * dt))
 	end
 
+	local airFor = 0 -- seconds airborne (Jumping / Freefall), for the ordinary jump's stance hand-off
 	local heartbeat
 	heartbeat = RunService.Heartbeat:Connect(function(dt)
 		if character.Parent == nil or humanoid.Health <= 0 then
@@ -569,11 +572,37 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 		if not controller.active then
 			return
 		end
+		local diving = (character:GetAttribute(diveAttr) or "") ~= ""
+		-- ORDINARY JUMP (Pass 12, Config.Movement.Jump): while airborne the stance / footwork tracks yield so Roblox's own
+		-- jump / fall animations show (no crouched sports pose in the air); they blend back in after landing. A Freefall
+		-- shorter than AirGrace (stepping off a small ledge) does not count. The paddle arm layer keeps running.
+		do
+			local J = Config.Movement.Jump
+			local st = humanoid:GetState()
+			local inAir = (st == Enum.HumanoidStateType.Jumping or st == Enum.HumanoidStateType.Freefall) and not diving
+			if inAir then
+				airFor += dt
+			else
+				airFor = 0
+			end
+			local air = J ~= nil and J.YieldStance ~= false and inAir and (st == Enum.HumanoidStateType.Jumping or airFor >= (J.AirGrace or 0.1))
+			if air ~= (controller.airborne == true) then
+				controller.airborne = air
+				if air then
+					stopAll(J.StanceFadeOut or 0.1, upperTracks)
+				else
+					controller.moveWeight, controller.runWeight = 0, 0
+					playAll(J.StanceFadeIn or 0.18)
+				end
+			end
+			if air then
+				return
+			end
+		end
 		-- keep the tracks alive (a respawn race or another script can stop them)
 		if not upper.IsPlaying or not ready.IsPlaying then
 			playAll(0.2)
 		end
-		local diving = (character:GetAttribute(diveAttr) or "") ~= ""
 		local v = root.AssemblyLinearVelocity
 		local flat = Vector3.new(v.X, 0, v.Z)
 		local speed = flat.Magnitude
@@ -713,9 +742,179 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 		k = math.clamp(k, 0, 1)
 		return k * k * (3 - 2 * k)
 	end
-	local windup: any = nil -- { t0, stroke } while a candidate flick's wind-up is shown
+	local saveTrackPlaying: () -> boolean = function() return false end -- (set below, once the save track exists)
+	-- ===== SMASH HOP (Config.ArmLayer.SmashHop; visual only) =====
+	-- A signed body height h(t) (studs, from the flick's onset): a quick dip, the rise to its peak just after the contact, the
+	-- fall to the floor and a small knee absorb. Applied in the layer below as an offset of the LowerTorso root joint (the
+	-- physics root never moves) with the legs flexed to keep the feet planted while h < 0.
+	local hop: any = nil -- { t0, tb, tc, tp, tl, te, dip, rise, absorb, fadeAt }
+	local function legLength(): number
+		local u, l = character:FindFirstChild("LeftUpperLeg"), character:FindFirstChild("LeftLowerLeg")
+		if u and l then
+			return (u :: BasePart).Size.Y + (l :: BasePart).Size.Y
+		end
+		return 4
+	end
+	local function hopHeight(h: any, t: number): number
+		local tb, tp, tl, te = h.tb, h.tp, h.tl, h.te
+		if t < 0 or t >= te then
+			return 0
+		elseif t < tb then
+			return -h.dip * smooth(t / tb)
+		elseif t < tp then
+			return -h.dip + (h.rise + h.dip) * smooth((t - tb) / math.max(tp - tb, 1e-3))
+		elseif t < tl then
+			local k = (t - tp) / math.max(tl - tp, 1e-3)
+			return h.rise * (1 - k * k) -- falling, accelerating
+		else
+			return -h.absorb * math.sin(math.pi * (t - tl) / math.max(te - tl, 1e-3))
+		end
+	end
+	-- Start a hop whose contact is `toContact` seconds away. Never while an emergency save / dive owns the body, never twice.
+	local function startHop(toContact: number): any
+		local SH = AL.SmashHop
+		if not SH or not SH.Enabled or hop then
+			return nil
+		end
+		if saveTrackPlaying() or (character:GetAttribute(diveAttr) or "") ~= "" then
+			return nil
+		end
+		local L = legLength()
+		local tb = math.min(SH.DipTime, math.max(toContact * 0.6, 0.02))
+		local tp = math.max(toContact + SH.PeakAfterContact, tb + 0.03)
+		local tl = math.max(SH.Total * SH.LandFraction, tp + 0.08)
+		local te = math.max(SH.Total, tl + 0.1)
+		hop = {
+			t0 = os.clock(), tb = tb, tc = toContact, tp = tp, tl = tl, te = te,
+			dip = SH.DipFraction * L, rise = SH.RiseFraction * L, absorb = SH.DipFraction * L * SH.AbsorbFraction,
+			fadeAt = nil,
+		}
+		local shot = shotRef
+		if shot then
+			shot.lastHop = { startedAt = hop.t0, contactAt = hop.t0 + toContact, peakAt = hop.t0 + tp, landAt = hop.t0 + tl, endAt = hop.t0 + te, rise = hop.rise, dip = hop.dip, legLength = L, maxHeight = 0, minHeight = 0, cancelled = false }
+		end
+		return hop
+	end
+	local function cancelHop()
+		if hop and not hop.fadeAt then
+			hop.fadeAt = os.clock()
+			if shotRef and shotRef.lastHop then
+				shotRef.lastHop.cancelled = true
+			end
+		end
+	end
+	-- The current signed height (studs) for this frame; ends / fades the hop.
+	local function hopStep(): number
+		local h = hop
+		if not h then
+			return 0
+		end
+		local now = os.clock()
+		local t = (now - h.t0) / math.max(AL.SmashHop.TimeScale or 1, 1e-3) -- (TimeScale 1 = real time; >1 only to review the motion)
+		if AL.SmashHop.FreezeAt then
+			t = AL.SmashHop.FreezeAt -- REVIEW ONLY: hold the hop at this time (s from the onset) to inspect a pose
+		end
+		if t >= h.te then
+			hop = nil
+			return 0
+		end
+		local v = hopHeight(h, t)
+		if h.fadeAt then
+			local f = 1 - math.clamp((now - h.fadeAt) / math.max(AL.SmashHop.FadeOut, 1e-3), 0, 1)
+			if f <= 0 then
+				hop = nil
+				return 0
+			end
+			v *= f
+		end
+		local lh = shotRef and shotRef.lastHop
+		if lh then
+			lh.maxHeight = math.max(lh.maxHeight, v)
+			lh.minHeight = math.min(lh.minHeight, v)
+		end
+		return v
+	end
+	local retractSwing: () -> ()
+	local windup: any = nil -- { t0, stroke, held } while committed (the cocked paddle)
 	local windupW = 0
-	local function startSwing(data: any)
+	-- ===== STROKE PROFILES (Config.ArmLayer.Strokes) =====
+	local ST = AL.Strokes
+	local ARM = Config.ShotControl.ArmReach
+	local function strokeProfile(data: any, stroke: string): string
+		if data.kind == "emergency" then
+			return "Scoop"
+		elseif data.smash then
+			return "Smash"
+		end
+		return stroke
+	end
+	local function strokeIntensity(data: any, profile: string): number
+		if profile == "Smash" or profile == "Scoop" then
+			return 1
+		end
+		local power = if typeof(data.power) == "number" then data.power else 0.5
+		return math.clamp((power - ST.SoftPower) / math.max(ST.StrongPower - ST.SoftPower, 1e-3), 0, 1)
+	end
+	local function torsoVec(T: CFrame, v: { number }, point: boolean): Vector3
+		local loc = Vector3.new(v[1], v[2], -v[3]) -- { right, up, forward } -> torso space (forward = -Z)
+		return if point then T:PointToWorldSpace(loc * ARM) else T:VectorToWorldSpace(loc).Unit
+	end
+	-- Solve the follow-through of swing `sw` for the shot `data` (its actual power / smash / emergency) and set its timing.
+	-- Called one frame after the contact solve, so no single frame pays for two solves.
+	local function planFollow(sw: any, data: any)
+		if swing ~= sw or not ST or not ST.Enabled or not sw.rig then
+			return
+		end
+		local profile = strokeProfile(data, sw.stroke)
+		local P = ST[profile]
+		if not P then
+			return
+		end
+		local k = strokeIntensity(data, profile)
+		local T = sw.torsoCF
+		local fullTarget, face
+		if profile == "Scoop" then
+			fullTarget = sw.contactPoint + Vector3.yAxis * (P.Follow[2] * ARM) + sw.out * (P.Follow[3] * ARM)
+			face = (Vector3.yAxis * 0.8 + sw.out * 0.4).Unit
+		else
+			fullTarget = torsoVec(T, P.Follow, true)
+			face = torsoVec(T, P.Face, false)
+		end
+		local reach = P.Reach[1] + (P.Reach[2] - P.Reach[1]) * k
+		local target = sw.contactPoint + (fullTarget - sw.contactPoint) * reach
+		local t0 = os.clock()
+		local pose, err = PaddleArm.solveContact(sw.rig, T, sw.stroke, target, face, sw.contact, TableWorld.world.tableBox)
+		local wz = P.Waist
+		pose = PaddleArm.offset(pose, { 0, 0, 0, 0, 0, 0, 0, 0, wz[1] * k, wz[2] * k, wz[3] * k })
+		if swing ~= sw then
+			return
+		end
+		sw.follow = pose
+		local ft = P.FollowTime[1] + (P.FollowTime[2] - P.FollowTime[1]) * k
+		sw.tf = sw.tc + ft
+		sw.th = sw.tf + (ST.HoldTime or 0)
+		sw.tr = sw.th + AL.ReturnTime
+		sw.profile, sw.intensity = profile, k
+		local shot = shotRef
+		if shot and shot.lastArmSolve then
+			local a = shot.lastArmSolve
+			a.profile, a.intensity, a.followError, a.followMs, a.followTime = profile, k, err, (os.clock() - t0) * 1000, ft
+			a.followAt = PaddleArm.fk(sw.rig, T, pose).Position
+			a.contactPoint = sw.contactPoint
+		end
+	end
+	-- The smash windup pose (committed, a smash-height ball predicted): blade above / behind the playing shoulder.
+	local function smashCock(stroke: string, seed: PaddleArm.Pose): PaddleArm.Pose?
+		local rig = rigNow()
+		local P = ST and ST.Smash
+		if not rig or not P or not P.Cock then
+			return nil
+		end
+		local T = rig.torso.CFrame
+		local pose = PaddleArm.solveContact(rig, T, stroke, torsoVec(T, P.Cock, true), torsoVec(T, P.CockFace, false), seed, TableWorld.world.tableBox)
+		return pose
+	end
+	local function startSwing(data: any, fromOnset: boolean?)
 		local rig = rigNow()
 		local from = shownPose or armPose
 		if not rig or not from or character.Parent == nil then
@@ -724,9 +923,20 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 		local stroke = if data.stroke == "Backhand" then "Backhand" else "Forehand"
 		local now = os.clock()
 		local serverNow = workspace:GetServerTimeNow()
-		local toContact = math.max((data.contactT or serverNow) - serverNow, AL.MinStrikeTime)
+		local minStrike = if fromOnset then (AL.OnsetMinStrikeTime or AL.MinStrikeTime) else AL.MinStrikeTime
+		local toContact = math.max((data.contactT or serverNow) - serverNow, minStrike)
 		local torsoCF = rig.torso.CFrame
+		-- SMASH: start the hop around this contact time; the arm is solved for where the torso WILL be at the contact
+		-- (Pass 12) never on top of an ordinary jump: an airborne player's body is already lifted (no double lift)
+		local airborne = humanoid.FloorMaterial == Enum.Material.Air
+		if data.smash and not data.serve and data.kind ~= "emergency" and not airborne then
+			local hp = hop or startHop(toContact)
+			if hp then
+				torsoCF = CFrame.new(0, hopHeight(hp, toContact), 0) * torsoCF
+			end
+		end
 		local contactPose, err
+		local outDir = Vector3.new(0, 0, -1)
 		local t0 = os.clock()
 		if typeof(data.contact) == "Vector3" then
 			-- outgoing direction: toward the base aim on the opponent's half (an emergency save: its middle)
@@ -734,7 +944,17 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 			local goal = TableWorld.pointOnHalf("Bot", 0.6, x)
 			local out = Vector3.new(goal.X - data.contact.X, 0, goal.Z - data.contact.Z)
 			out = if out.Magnitude > 1e-3 then out.Unit else Vector3.new(0, 0, -1)
-			contactPose, err = PaddleArm.solveContact(rig, torsoCF, stroke, data.contact - out * AL.FaceOffset, out, from, TableWorld.world.tableBox)
+			outDir = out
+			-- the striking face: along the shot; a SMASH closes it downward (driving down), a SCOOP opens it upward and goes
+			-- under the ball (Config.ArmLayer.Strokes)
+			local faceDir = out
+			if ST and ST.Enabled and data.kind == "emergency" then
+				local u = ST.Scoop.ScoopUp or 0.75
+				faceDir = (out * (1 - u) + Vector3.yAxis * u).Unit
+			elseif ST and ST.Enabled and data.smash then
+				faceDir = (out - Vector3.yAxis * 0.45).Unit
+			end
+			contactPose, err = PaddleArm.solveContact(rig, torsoCF, stroke, data.contact - faceDir * AL.FaceOffset, faceDir, from, TableWorld.world.tableBox)
 		else
 			-- no ball to meet: a stroke forward from the prepared blade
 			local blade = PaddleArm.fk(rig, torsoCF, from)
@@ -765,7 +985,33 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 			from = from,
 			contact = contactPose,
 			follow = PaddleArm.offset(contactPose, AL.Follow[stroke]),
+			fromOnset = fromOnset == true,
+			confirmed = not fromOnset,
+			-- (for the follow-through solve, Strokes)
+			rig = rig,
+			torsoCF = torsoCF,
+			contactPoint = solved.Position,
+			out = outDir,
+			stroke = stroke,
 		}
+		if not fromOnset then
+			task.defer(planFollow, swing, data) -- (an onset stroke plans it when the finished flick confirms it)
+		end
+		if shot and shot.lastArmSolve then
+			shot.lastArmSolve.startedAt = now -- (diagnostics) first visible stroke frame follows this
+			shot.lastArmSolve.contactAt = now + toContact -- the paddle reaches the solved contact pose here (os.clock)
+			shot.lastArmSolve.fromOnset = fromOnset == true
+		end
+	end
+	-- A stroke started at the onset whose flick never became a swing: ease back to the prepared pose from where it is.
+	function retractSwing()
+		local from = shownPose or armPose
+		local now = os.clock()
+		if not from then
+			swing = nil
+			return
+		end
+		swing = { t0 = now, tc = now, tf = now, tr = now + 0.15, from = from, contact = from, follow = from, fromOnset = false, confirmed = true }
 	end
 	-- EMERGENCY SAVE body clip (Config.Emergency; /animate clips NP_SaveRight / NP_SaveLeft, Action3): a reaching lunge
 	-- toward the ball, landing at its Land marker (0.25 s = LandDelay), then the 0.5 s stand-up. It keys the legs, hips,
@@ -773,6 +1019,9 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 	-- During the stand-up it hands the legs back to the footwork as soon as you move (its weight drops with the moving
 	-- weight), so movement keeps responding; it fades out at its end.
 	local saveTrack: AnimationTrack? = nil
+	saveTrackPlaying = function(): boolean
+		return saveTrack ~= nil and (saveTrack :: AnimationTrack).IsPlaying
+	end
 	local saveLand = 0.25
 	function controller.playSave(self: Controller, side: string)
 		if saveTrack then
@@ -805,15 +1054,33 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 			if shotRef ~= shot then
 				return
 			end
-			-- the reversible wind-up at a credible flick onset (Config.ArmLayer.Windup): eased in on "onset", eased back out
-			-- on "onsetEnd" (an ignored candidate) or after Windup.Max; a swing starts from the wound-up pose
-			if event == "onset" then
-				windup = { t0 = os.clock(), stroke = data and data.stroke or shot.stroke }
-			elseif event == "onsetEnd" or event == "reset" or event == "cancel" then
+			-- COMMITTED = the cocked paddle (Config.ArmLayer.Windup): eased in at the press, held while the button is held,
+			-- eased back out on release / cancel / reset. A stroke starts from it.
+			if event == "commit" and data and not data.serve then
+				windup = { t0 = os.clock(), stroke = data.stroke or shot.stroke, held = true }
+			elseif event == "reset" or event == "cancel" then
 				windup = nil
 			end
+			-- ONSET (ShotControl.StrokeAtOnset): the stroke starts as soon as the flick is credible, timed to meet the ball at
+			-- the contact moment; "onsetEnd" (the flick never became a swing) retracts it
+			local atOnset = Config.ShotControl.StrokeAtOnset == true
+			if event == "onset" and atOnset and character.Parent ~= nil then
+				startSwing(data, true)
+				windup = nil
+			elseif event == "onsetEnd" and swing and swing.fromOnset and not swing.confirmed then
+				retractSwing()
+				cancelHop()
+			end
 			if event == "swing" and not data.serve and character.Parent ~= nil then
-				startSwing(data)
+				if atOnset and data.onsetStarted and swing and swing.fromOnset and not swing.confirmed then
+					swing.confirmed = true -- already under way since the onset (same contact moment and point)
+					task.defer(planFollow, swing, data) -- the finished flick's power / smash decide the follow-through
+					if hop and not data.smash then
+						cancelHop() -- the onset looked like a smash but the finished flick / contact is not one
+					end
+				else
+					startSwing(data, false)
+				end
 				windup = nil
 				if data.kind == "emergency" and data.lunge and controller.active then
 					-- lunge toward the ball's side of the body (the predicted contact)
@@ -867,30 +1134,60 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 			return
 		end
 		local stroke = if shot.stroke == "Backhand" then "Backhand" else "Forehand"
-		local across = if stroke == "Forehand" then math.clamp(shot.prepU or 0, 0, 1) else math.clamp(-(shot.prepU or 0), 0, 1)
+		-- across (0 = central .. 1 = wide on the stroke's side). With Q selection either stroke uses the whole screen width
+		-- (cursor on the far other side = the most central pose of that stroke); with cursor selection, half of it.
+		local u = shot.prepU or 0
+		local across
+		if Config.ShotControl.StrokeSelect == "Q" then
+			across = if stroke == "Forehand" then math.clamp((u + 1) / 2, 0, 1) else math.clamp((1 - u) / 2, 0, 1)
+		else
+			across = if stroke == "Forehand" then math.clamp(u, 0, 1) else math.clamp(-u, 0, 1)
+		end
 		local target = PaddleArm.prepPose(stroke, across, shot.prepV or 0.5)
 		armPose = if armPose then PaddleArm.lerp(armPose :: PaddleArm.Pose, target, 1 - math.exp(-AL.PrepSmoothing * dt)) else target
 		local pose = armPose :: PaddleArm.Pose
 		-- wind-up (see setShot): weight eases toward 1 while a candidate flick is being measured, back to 0 otherwise
 		local WU = AL.Windup
-		if windup and os.clock() - windup.t0 > (WU and WU.Max or 0) then
+		if windup and not windup.held and os.clock() - windup.t0 > (WU and WU.Max or 0) then
 			windup = nil
 		end
 		local wantW = if windup and WU and WU.Enabled and not swing then 1 else 0
 		windupW += (wantW - windupW) * math.min(dt / math.max(WU and WU.Time or 0.05, 1e-3) * 2.5, 1)
+		-- SMASH WINDUP: committed with a smash-height ball predicted -> cocked above / behind the playing shoulder (solved once)
+		local wu = windup
+		if wu and wu.held and ST and ST.Enabled and not wu.cock and os.clock() >= (wu.nextCockCheck or 0) then
+			wu.nextCockCheck = os.clock() + 0.1
+			local w = shot.window
+			if w and not shot.serving and (shot.smashable or (typeof(w.idealPosition) == "Vector3" and ShotInput.smashEligible(w.idealPosition, 1))) then
+				wu.cock = smashCock(stroke, pose)
+				if wu.cock then
+					shot.lastCockAt = os.clock() -- (diagnostics)
+				end
+			end
+		end
 		if windupW > 0.002 and WU and not swing then
-			local key = if stroke == "Backhand" then "Backhand" else "Forehand"
-			pose = PaddleArm.lerp(pose, PaddleArm.offset(pose, WU[key]), windupW)
+			if wu and wu.cock then
+				pose = PaddleArm.lerp(pose, wu.cock, windupW)
+			else
+				local key = if stroke == "Backhand" then "Backhand" else "Forehand"
+				pose = PaddleArm.lerp(pose, PaddleArm.offset(pose, WU[key]), windupW)
+			end
 		end
 		if swing then
 			local now = os.clock()
 			local s = swing
+			if ST and ST.FreezeAt then
+				now = s.tc + ST.FreezeAt -- REVIEW ONLY: hold the stroke at contact + FreezeAt
+			end
+			local th = s.th or s.tf
 			if now < s.tc then
 				pose = PaddleArm.lerp(s.from, s.contact, smooth((now - s.t0) / math.max(s.tc - s.t0, 1e-3)))
 			elseif now < s.tf then
 				pose = PaddleArm.lerp(s.contact, s.follow, smooth((now - s.tc) / math.max(s.tf - s.tc, 1e-3)))
+			elseif now < th then
+				pose = s.follow -- (a brief hold at the finish)
 			elseif now < s.tr then
-				pose = PaddleArm.lerp(s.follow, pose, smooth((now - s.tf) / math.max(s.tr - s.tf, 1e-3)))
+				pose = PaddleArm.lerp(s.follow, pose, smooth((now - th) / math.max(s.tr - th, 1e-3)))
 			else
 				swing = nil
 			end
@@ -948,6 +1245,31 @@ function StancePose.start(character: Model, _walkAnimationId: string?, stroke: s
 		neck.Transform = neck.Transform * CFrame.fromEulerAnglesYXZ(-b * 0.6, -A.NeckCounter * hipYaw + headBack, 0)
 		if shoulder then
 			shoulder.Transform = shoulder.Transform * CFrame.Angles(A.FreeArmSwing * hipYaw, 0, 0)
+		end
+		-- SMASH HOP (visual only): raise / lower the body on the root joint, flex the legs while lowered
+		local hopH = hopStep()
+		if hopH ~= 0 then
+			rootJoint.Transform = CFrame.new(0, hopH, 0) * rootJoint.Transform
+			if hopH < 0 then
+				local SH = AL.SmashHop
+				local th = math.acos(math.clamp(1 + hopH / math.max(legLength(), 1e-3), -1, 1)) * (SH.LegFlex or 1) -- thigh flexion that lowers the hip by -hopH (LegFlex calibrates it for the already-bent ready stance)
+				for _, side in { "Left", "Right" } do
+					local up, low = character:FindFirstChild(side .. "UpperLeg"), character:FindFirstChild(side .. "LowerLeg")
+					local foot = character:FindFirstChild(side .. "Foot")
+					local hip = up and up:FindFirstChild(side .. "Hip") :: any
+					local knee = low and low:FindFirstChild(side .. "Knee") :: any
+					local ankle = foot and foot:FindFirstChild(side .. "Ankle") :: any
+					if hip then
+						hip.Transform = hip.Transform * CFrame.Angles(SH.HipSign * th, 0, 0)
+					end
+					if knee then
+						knee.Transform = knee.Transform * CFrame.Angles(SH.KneeSign * 2 * th, 0, 0)
+					end
+					if ankle then
+						ankle.Transform = ankle.Transform * CFrame.Angles(SH.HipSign * th, 0, 0) -- keeps the foot flat
+					end
+				end
+			end
 		end
 		armLayer(dt) -- the paddle arm last (click-and-flick preparation / stroke)
 	end)

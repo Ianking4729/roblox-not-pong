@@ -1,6 +1,6 @@
 # Current State
 
-_Last updated: 2026-11-17 (Pass 8), latest change: **mouse-only rally input prototype (no click: the cursor prepares, a deliberate flick while the ball is coming is the swing), switchable back with `Config.ShotControl.RallyInput = "ClickLock"`**; see "Pass 8" at the end. Before it (Pass 7 Stage 1): **legal rising-ball returns (the falling-ball requirement is now `Config.ShotControl.RequireFallingBall = false`; save ring unchanged) and brief HUD miss reasons (NO FLICK / TOO EARLY / TOO LATE / OUT OF REACH / CONTACT • OUT)**; see "Pass 7 Stage 1" at the end (it supersedes the falling-ball rule described in Pass 6 / 6c / 6d). Before it (Pass 6): **click-and-flick rally (cursor-prepared paddle and base aim, click to commit, flick = swing: speed -> power, direction -> spin), serves by flick, the emergency save replacing the F dive, rally slow motion off, a procedural paddle arm that meets the ball**; see "Pass 6" at the end (it supersedes every earlier section on hold-to-charge, drag spin, release-to-strike, the charge slow motion, the F dive and its automatic return). Before it, 2026-11-16 (Pass 5c): **paddle v4 (flat-bottom rubbers exposing the wooden shoulder, narrow black edge band, plain colours, textures removed) and a genuine backhand face flip (the opposite rubber faces the player)**; see "Pass 5c" at the end (it supersedes Pass 5b's zones/textures and Pass 5's backhand pose). Before it: **paddle v3 from the build guide: same blade size and hit area, shorter flared handle, thicker 5-ply blade with sponge and separate rubber sheets, fine 1024 px rubber/wood/grip textures**; see "Pass 5b" at the end (it supersedes Pass 5's paddle description). Pass before it: **hybrid footwork (longer shuffles + crossover strides), a detailed larger paddle with independently styled zones and a matching contact radius, and the cursor-side paddle holding lean**; see "Pass 5" at the end (it supersedes the old shuffle clips/cadence settings and the old paddle template). Before it: **safe serve envelope (no serves escaping over the receiver's side line), Q serving posture, serve camera offset from court position, defensive dive lobs, bounded serve-solver cost, and a new concept-based table + large-square net**; see "Pass 4" at the end; it supersedes Pass 3's fixed serve-camera offset, its serve-stroke-from-cursor rule, its dive-return speed and its serve-solver budget, and the table asset description in "Uploaded assets". Before it, 2026-11-16: **balanced camera follow + lower serve view, natural toss with NO serve slow motion, contact-based legal serves, automatic dive returns (~90% legal), honest clean-shot preview, reversal flicker in the footwork**; see "Pass 3" at the end; it supersedes Pass 2's serve (apex slow motion, fixed-height timer, unforgiving fixed launch) and dive (manual contact) sections. Before it, 2026-11-15: **fluid athletic movement (stiffness/shake diagnosed and fixed), manual dive contact with F + backward dives and a 1.3 s get-up, and the player's manual toss-and-strike serve**; see "Pass 2: movement, manual dives, manual serve" at the end; it supersedes older sections on the dive (key E, automatic return), the serve (automatic strike, fixed spot) and the footwork/grounding. Before it the same day: **uploaded table + paddle, table enlarged x1.5, Edit-mode persistence fixed, new dive/get-up and shuffle footwork animations, wider camera and off-platform behaviour**; see "Uploaded assets, x1.5 table, persistence, dive/footwork animations, off-platform camera" near the end. Where this file's older sections disagree with that section (table size, ball size, editing rules, dive pose), that section wins. Earlier the same day: forehand/backhand by mouse screen side, and runtime checks of slow motion and stamina; see "Forehand / backhand + runtime checks" near the end. Before it, 2026-11-14: gameplay refinement awaiting review: much stronger sidespin curves, faster shots, a low over-the-shoulder camera, and server-authoritative charge slow motion; see "Refinement" below. Before it: the Charge -> Curve -> Release core rework, Phase 4 feedback/movement, Phase 2-3 physics, rallies and shot controls)._
+_Last updated: 2026-11-21 (Coastal pier pass 2: structural cleanup: turf meets the rim cleanly, dark grey / turquoise / dark grey trim, the ball lands on the real deck and beach, rebuilds keep your edits; see "Coastal pier arena, pass 2"), earlier (Coastal pier pass 1: structural blockout: turf disc court, white rim, walkable sloped glass, turquoise trim, warm promenade, open air above a lowered beach; see "Coastal pier arena, pass 1"), earlier (Pass 15: trail taper reversed (widest at the ball), colours by return count (10 / 20 / 30), one jump per grounded cycle; see "Pass 15"), earlier (Pass 14: comet ball trail built from your Trails sheets: five textured layers by rally stage, crimson red stage, no comet on the toss; see "Pass 14"), earlier (Pass 13: visible trails + strands, flat serve guide with ring / arrow before the strike, guide hidden at contact, match-over ball in hand + explicit new match, blue shot preview; see "Pass 13"), earlier (Pass 12: platform-wide serving area, serve landing guide, toss ring, orange fix, logo 70%, lower jump, 20% pace + rally colours; see "Pass 12"), earlier (Pass 11: stroke profiles + downward smash, shot VFX, rally-pace experiment off by default; see "Pass 11"), earlier (Pass 10b: smash hop built, spin dial removed, larger cursor trace; see "Pass 10b"), earlier: 2026-11-18 (Pass 10), latest change: **feedback pass: progressive trajectory reveal, cursor trace instead of the Curve bar, orange trail for server-classified attackable high balls (no difficulty change)**; see "Pass 10" at the end. Before it (Pass 9): **Q selects forehand/backhand, hold-left-click + flick restored as the only rally input, flick response fixed (stroke at onset, short bounded measurement, ball response shown at the contact moment), and a symmetric body-centred contact zone**; see "Pass 9" at the end (it supersedes Pass 8's button-free prototype and the cursor-side stroke selection). Before it (Pass 8): **mouse-only rally input prototype (no click: the cursor prepares, a deliberate flick while the ball is coming is the swing), switchable back with `Config.ShotControl.RallyInput = "ClickLock"`**; see "Pass 8" at the end. Before it (Pass 7 Stage 1): **legal rising-ball returns (the falling-ball requirement is now `Config.ShotControl.RequireFallingBall = false`; save ring unchanged) and brief HUD miss reasons (NO FLICK / TOO EARLY / TOO LATE / OUT OF REACH / CONTACT • OUT)**; see "Pass 7 Stage 1" at the end (it supersedes the falling-ball rule described in Pass 6 / 6c / 6d). Before it (Pass 6): **click-and-flick rally (cursor-prepared paddle and base aim, click to commit, flick = swing: speed -> power, direction -> spin), serves by flick, the emergency save replacing the F dive, rally slow motion off, a procedural paddle arm that meets the ball**; see "Pass 6" at the end (it supersedes every earlier section on hold-to-charge, drag spin, release-to-strike, the charge slow motion, the F dive and its automatic return). Before it, 2026-11-16 (Pass 5c): **paddle v4 (flat-bottom rubbers exposing the wooden shoulder, narrow black edge band, plain colours, textures removed) and a genuine backhand face flip (the opposite rubber faces the player)**; see "Pass 5c" at the end (it supersedes Pass 5b's zones/textures and Pass 5's backhand pose). Before it: **paddle v3 from the build guide: same blade size and hit area, shorter flared handle, thicker 5-ply blade with sponge and separate rubber sheets, fine 1024 px rubber/wood/grip textures**; see "Pass 5b" at the end (it supersedes Pass 5's paddle description). Pass before it: **hybrid footwork (longer shuffles + crossover strides), a detailed larger paddle with independently styled zones and a matching contact radius, and the cursor-side paddle holding lean**; see "Pass 5" at the end (it supersedes the old shuffle clips/cadence settings and the old paddle template). Before it: **safe serve envelope (no serves escaping over the receiver's side line), Q serving posture, serve camera offset from court position, defensive dive lobs, bounded serve-solver cost, and a new concept-based table + large-square net**; see "Pass 4" at the end; it supersedes Pass 3's fixed serve-camera offset, its serve-stroke-from-cursor rule, its dive-return speed and its serve-solver budget, and the table asset description in "Uploaded assets". Before it, 2026-11-16: **balanced camera follow + lower serve view, natural toss with NO serve slow motion, contact-based legal serves, automatic dive returns (~90% legal), honest clean-shot preview, reversal flicker in the footwork**; see "Pass 3" at the end; it supersedes Pass 2's serve (apex slow motion, fixed-height timer, unforgiving fixed launch) and dive (manual contact) sections. Before it, 2026-11-15: **fluid athletic movement (stiffness/shake diagnosed and fixed), manual dive contact with F + backward dives and a 1.3 s get-up, and the player's manual toss-and-strike serve**; see "Pass 2: movement, manual dives, manual serve" at the end; it supersedes older sections on the dive (key E, automatic return), the serve (automatic strike, fixed spot) and the footwork/grounding. Before it the same day: **uploaded table + paddle, table enlarged x1.5, Edit-mode persistence fixed, new dive/get-up and shuffle footwork animations, wider camera and off-platform behaviour**; see "Uploaded assets, x1.5 table, persistence, dive/footwork animations, off-platform camera" near the end. Where this file's older sections disagree with that section (table size, ball size, editing rules, dive pose), that section wins. Earlier the same day: forehand/backhand by mouse screen side, and runtime checks of slow motion and stamina; see "Forehand / backhand + runtime checks" near the end. Before it, 2026-11-14: gameplay refinement awaiting review: much stronger sidespin curves, faster shots, a low over-the-shoulder camera, and server-authoritative charge slow motion; see "Refinement" below. Before it: the Charge -> Curve -> Release core rework, Phase 4 feedback/movement, Phase 2-3 physics, rallies and shot controls)._
 
 ## Architecture: static arena in Studio, dynamic gameplay at runtime
 
@@ -1244,6 +1244,849 @@ So inside the swing zone (~0.95 s per ball) a quick small re-aim across the scre
 
 **Files:** new `Shared/MouseSwing.luau`; changed `Shared/FlickGesture.luau` (closedBy, onsetEventT, onset()), `Shared/Config.luau` (`RallyInput`, `MouseOnlyRally`, `ArmLayer.Windup`, ShowInputDebug comment), `Client/ShotController.luau` (mouse-only path, prep history, `computeWindows`, zone, onset events, bridge `drag` + fields), `Shared/StancePose.luau` (wind-up), `Client/ShotFeedback.luau` (dev indicator), `Client/Telemetry.luau` (ignored counters).
 
+## Pass 9: Q stroke selection, click commitment, flick-delay fix, body-centred contact zone (2026-11-18, awaiting your real-mouse playtest)
+
+Supersedes Pass 8: the button-free rally prototype is removed from the controller (copy: `tools/legacy/ShotController_mouseonly_2026-11-17.luau`; `Shared/MouseSwing` and `Config.MouseOnlyRally` stay on disk, unloaded). One rally input system: hold left-click + flick. Ball speed, timing tolerances, shot physics, serving rules, camera, bot, scoring, footwork and assets unchanged.
+
+### A. Input and response
+**Sequence:** *Q* toggles Forehand/Backhand (rally only; bound just below the serve's Q, which keeps switching the serving posture while the ball is in your hand, and Q is ignored while your own toss is up) → *cursor* sets base aim (both strokes reach the whole opponent's half: −0.95..+0.95), drive/arc profile and the prepared paddle (either stroke uses the full screen width for its prepared pose) → *fresh left press* commits: locks stroke, aim, profile; holds the cursor in place; starts a fresh flick measurement; the paddle shows a cocked (committed) pose; movement untouched → *flick while held*: onset → the stroke starts; finalised after a short bounded measurement → request sent, power (speed) and spin (direction) set; the ball's new flight shown locally at the contact moment → recovery → preparation (a Q pressed meanwhile is applied now). Release without a flick cancels; one attempt per press; holding never rearms or adds power; flick tails are ignored; release never swings. Focus loss, UI text-box focus, input cancel, point reset and respawn clear a commitment.
+**Flick-delay root causes (measured, Studio, 60 fps, same synthetic flick; times after the hand starts):**
+| stage | before | after |
+|---|---|---|
+| onset recognised | 0.033 s | 0.033 s |
+| finalised / request sent | 0.067 s (up to 0.100: waited for the hand to slow or SegmentMax) | 0.050 s (≤ 0.050 at ≥ 60 fps: `Flick.MeasureTime` 0.04 s from the flick start) |
+| first stroke frame | 0.067 s (at recognition) | 0.033 s (at onset: `ShotControl.StrokeAtOnset`) |
+| paddle at the contact pose | 0.128 s (58 ms after the judged contact: the stroke always took the 0.06 s minimum) | 0.070 s = the judged contact (`ArmLayer.OnsetMinStrikeTime` 0.025) |
+| judged contact | 0.070 s | 0.070 s (unchanged: start + `Flick.ContactDelay`) |
+| ball's new flight visible | after the server round trip: ~0.10 s in Studio; 0.30 s with ~100 ms simulated lag | 0.083–0.085 s (the first frame after contact) from the local prediction (`ShotControl.PredictBallResponse`; also with 100 ms lag); the server's snapshot follows (0.084–0.117 s in Studio, 0.30 s with lag) and replaces it |
+No backdating: the contact moment is unchanged; what changed is that the paddle and the ball are SHOWN at it. The prediction uses the same ShotLaunch inputs as the server; a server miss / refusal reverts the ball to its real path; a periodic snapshot of the old flight cannot undo a shown prediction; an unconfirmed prediction expires after 1.5 s. Offline (FlickGesture alone, 48 flicks × 30/60/144/240 fps): all recognised in both versions; finalised median 0.067/0.050/0.042/0.046 s (before 0.100/0.067/0.056/0.054, max before up to 0.100); spin direction identical in 48/48; power differs by 0.015–0.024 on average (max 0.12 on long 100 ms flicks, which are now measured over their first 40 ms); 2 s of ±6 px jitter → 0 flicks. Thresholds unchanged (`Config.Flick`: OnsetWindow 0.05, OnsetDistance 36, OnsetSpeed 1100, Coherence 0.8, MeasureTime 0.04, SegmentMax 0.06 cap).
+
+### B. Body-centred contact zone (`ShotControl.ContactModel = "Body"`, `Config.ContactZone`)
+One symmetric volume for both strokes, centred on the root, oriented along the table (so client and server agree from the root position; the server uses the client's root claim within MaxRootMismatch, as before). Horizontal half-ellipses; only the ball centre inside it at the judged moment counts (no body-part, accessory or paddle collision ever makes contact). Ideal moment = the ball closest to the sweet point 4.5 studs ahead. Launch "stretch" = distance from the sweet point / the zone's larger radius.
+| | before (Anchor, per stroke) | after (Body, both strokes) |
+|---|---|---|
+| normal | 9.48-stud circle centred 4 to the stroke's side, 3 ahead: forehand 5.5 left..13.5 right, 6.5 behind..12.5 ahead, 4..20 above the floor (282 sq studs) | 13.55 either side, 3.55 behind, 13.05 ahead, 4..22 above the floor (350 sq studs) |
+| emergency | the circle + 4.5 (radius 13.98), falling ball only | 18.05 either side, 5.05 behind, 17.55 ahead, 3..24 above the floor, falling ball only |
+Measured (scripted): 0 left/right mismatches over a 0.5-stud grid at 4 character facings; with FOREHAND selected a ball 11 studs right AND 11 studs left both CLEAN; Backhand 11 right CLEAN; 16 out → emergency SAVE; 24 out → "ball never in reach". `ContactModel = "Anchor"` restores the old model (serves always use it). Developer outlines: `ContactZone.Visualize` (green normal, orange emergency, a post at the sweet point from the low to the high contact height); `Player.NotPongZoneDebug:Invoke("toggle")`.
+
+### Tests (scripted through the debug bridges, NOT a real mouse; real Q key via Studio's keyboard input where stated)
+Q selects either stroke in a rally (bridge and real key); real Q during your serve → posture LeftLead→RightLead, rally selection unchanged; both strokes aim −0.95/0/+0.95; press → COMMITTED, cursor moves / Q while held change nothing (Q queued, applied after release), WalkSpeed 24→24, root not anchored; held 0.6 s + jitter + 300 px/s drift → no swing, power 0; fast movement before the press → 0 flick events; release without flick → no request; flick + tail + another flick while held through recovery → exactly 1 request; holding after recovery → no swing; focus loss / UI text focus / point reset / respawn while committed → IDLE, cursor released, later flicks ignored; a click inside a focused text box never commits; early (−0.4 s) / late (+0.42 s) → TOO EARLY / TOO LATE, no predicted ball response; rally hits CLEAN with 100 ms simulated lag. Rendered stills: zone outlines; forehand (black face toward the camera) and backhand (red face, paddle across the body, same hand).
+
+**Not verified:** real-mouse feel (is 0.04 s measurement enough? does the cocked pose read as "committed"?); the onset stroke in motion at full speed (stills only); other frame rates in Play; real internet conditions beyond Studio's simulated lag.
+
+**Known issues / limitations:** the arm cannot always reach the larger zone's far edges: with Forehand selected a ball 11 studs to the LEFT is accepted but the solved paddle stays 3.8 studs from it (1.0 on the forehand side); emergency contacts 16 studs out 4.7 studs (the save lunge covers part of it). If the server's launch differs from the prediction (e.g. a root claim outside MaxRootMismatch), the ball corrects with a small jump when the snapshot arrives. A miss reverts a shown prediction only if one was shown (predictions are made only for predicted hits). Long flicks (≥ 0.1 s) can measure up to ~0.1 less power than before. Q is ignored while your own serve toss is in the air.
+
+**Configurable:** `ShotControl.StrokeSelect` ("Q"/"Cursor"), `StrokeAtOnset`, `PredictBallResponse`, `ContactModel` ("Body"/"Anchor"); `Flick.MeasureTime` (nil = old finalisation); `ArmLayer.OnsetMinStrikeTime`, `ArmLayer.Windup` (cocked pose); `ContactZone.Normal/Emergency` (Side, Forward, Back, LowAboveFloor, HighAboveFloor), `SweetForward`, `Visualize`.
+
+**Files:** `Client/ShotController.luau` (rewritten: Q selection, queued stroke, zones, onset event, local ball prediction, UI-focus reset, timing trace; button-free path removed), `Client/BallView.luau` (predictHit / cancelPrediction / hitDebug / noteSwing), `Client/ContactRing.luau` (approach from either reach model), `Client/ShotFeedback.luau` (dev indicator: stroke + queued, PREPARING / COMMITTED / SWING / RECOVERING), `Client/Telemetry.luau` (TIMING line, Q counters), new `Client/ZoneDebug.luau`, `Client/Main.local.luau`, `Shared/ShotInput.luau` (body zone, reachZone/reachPoint/reachStretch, contactWindow takes a zone, prep stroke from Q), `Shared/FlickGesture.luau` (MeasureTime), `Shared/StancePose.luau` (cocked pose while committed, stroke at onset + retract, full-width prepared pose for Q selection), `Shared/Config.luau`, `Server/RallyService.luau` (zones, emergency zone, stretch, NOSWING).
+
+**Manual playtest checklist:** 1) Q in a rally switches the paddle pose promptly; Q on your serve still switches posture. 2) Aim far left / right with both strokes. 3) Press: the paddle cocks; you can still walk. 4) Flick: does the stroke start with your hand and meet the ball as it changes direction? 5) Hold without flicking, then release: nothing happens. 6) Off-side balls (forehand selected, ball on the left): reachable, but watch for the paddle not quite meeting the ball. 7) Turn the outlines on/off (`NotPongZoneDebug`). 8) `Player.NotPongTelemetry:Invoke("print")` and the [Tel] TIMING lines.
+
+## Pass 10 (feedback pass 1 of 4): trajectory reveal, cursor trace, attackable-high-ball trail (2026-11-18, awaiting your review)
+
+Difficulty unchanged (no gameplay, timing, reach or physics change). Pass 9 is the baseline; every item here has a switch.
+
+1. **Trajectory reveal** (`Client/TrajectoryArrow`, `Config.Feedback.Arrow.Reveal / RevealTime 0.22 / HoldTime 0.45 / FadeTime 0.3`): during preparation only the base-aim marker shows (no power / spin pretended). When the flick is finalised the predicted path (the client's ShotLaunch from the actual inputs) DRAWS from the contact point toward the landing, the head riding the leading edge; the landing ring and any NET / OUT / RISKY / SMASH label appear only when the drawing reaches the end; it holds and fades by itself. When the server's verdict arrives the path is recomputed from the server's own contact point, velocity and spin (eased in, reveal not restarted); a miss / refusal removes it. Measured (scripted, Studio, 60 fps): drawing complete 0.216 s after the finalised flick for a 0.81 s flight, gone at 0.98 s; leading edge never behind the real ball (smallest margin +0.07 of the path); redrawn from the server 0.018 s after the flick; predicted landing vs the real ball's first bounce 0.03 / 0.11 / 0.09 / 0.11 studs (4 flicks: up, left, diagonal, down); one weak hit's client prediction was 2.6 studs off and the server redraw corrected it.
+2. **Cursor trace** (new `Client/CursorTrace`, `Config.Feedback.CursorTrace`; the Curve bar is hidden: `PowerMeter.ShowCurve = false`; the flick dial's idealised spin arrow is hidden while the trace is on): while left-click is held, the very relative-movement samples the flick detector receives (recorded by the controller as display-only `traceSamples`, plus a 0.12 s tail) are drawn around the held cursor: cumulative movement × 0.5, shrunk uniformly into 110 px; thickness / brightness by sample speed; the measured flick bright, hold drift and tail faint; a small end marker; fades 0.45 s after the stroke; cancelled on release without a flick. The real cursor is never moved and the trace never feeds back. Measured: a (0.6, −0.8) 140 px flick drew 11 points ending at (28, −47) px.
+3. **Attackable high-ball trail** (`ShotInput.highBallWindow`, server classification sent as snapshot `hb`, `Client/BallTrail`, `Config.Feedback.HighBallTrail`): for every hit the server simulates the ball and finds when it is smash-legal for the RECEIVER (after its legal bounce, before a second bounce: ≥ SmashMinHeight 7.5 above the table, ≤ the reachable height, ≤ SmashMaxBehindEndLine behind the receiver's end line). Because ordinary bot returns often touch that geometry briefly, the trail uses a stricter "clearly attackable" subset: window ≥ 0.4 s and apex ≥ 9.5 above the table (measured: ordinary bot returns apex 7.6–10.5 / window 0.07–0.37 s excluded; the bot's pop-up 10.9 / 0.51 s and soft player lobs 9.7–12.1 / 0.41–0.50 s included). Then the normal trail fades and a thin orange line (sum of three sines in distance travelled, phases seeded per ball, slow amplitude envelope, 0.22 studs) + a wide faint companion follow the rendered ball; fade-in 0.15 s; fade-out 0.35 s when the window ends, 0.08 s when the receiver hits it; cleared on reset / held ball / teleport. Measured (scripted): 10 of 45 balls classified (all soft lobs, no ordinary return); blend 0.88 at 0.12 s after an attackable hit, 0.00 at 0.12 s after the return; point over → 0, line disabled (3 points). Server log line `HIGHBALL hit N by side: window, apex (-> ATTACKABLE)`.
+
+**Not verified:** the LOOK of all three (Studio's 3D view did not render during this pass: stills showed only the HUD); real-mouse feel of the trace; other frame rates.
+**Files:** `Client/TrajectoryArrow.luau`, new `Client/CursorTrace.luau`, `Client/ShotFeedback.luau`, `Client/PowerMeter.luau`, `Client/BallTrail.luau`, `Client/BallView.luau` (info.highBall), `Client/ShotController.luau` (traceSamples), `Shared/ShotInput.luau` (highBallWindow), `Shared/Config.luau` (Arrow reveal, CursorTrace, HighBallTrail, PowerMeter.ShowCurve), `Server/RallyService.luau` (classification + snapshot field + HIGHBALL telemetry).
+**Revert:** `Feedback.Arrow.Reveal = false`, `Feedback.CursorTrace.Enabled = false` + `Feedback.PowerMeter.ShowCurve = true`, `Feedback.HighBallTrail.Enabled = false`.
+**Playtest checklist:** 1) after a flick, does the path draw ahead of the ball and get out of the way? 2) does a NET / OUT prediction read clearly? 3) does the cyan trace match what your hand did (direction, speed)? 4) soft high lobs (cursor high, gentle flick) and bot pop-ups: orange wavy trail, subtle enough? never on ordinary returns? 5) the orange stops as soon as the ball is hit back.
+
+## Pass 10b (fixes, 2026-11-19): smash hop, spin dial removed, larger cursor trace
+
+**1. Smash hop — cause of "not visible": it did not exist.** Pass 2 (scoop, intensity, hop) was never built (I reported Pass 1 and stopped); nothing classified a swing as a smash on the client, and no hop motion existed, so there was nothing to be overwritten by stance / footwork / arm controllers. Built now (visual only: no jump velocity, reach, root displacement, slowdown or lock):
+- *Classification:* `ShotController` marks the **onset** event `smash` when the predicted contact is smash-eligible (`ShotInput.smashEligible(contact, 1)`), the ball is genuinely in play (not "never in reach"), it is not an emergency save, and the onset is fast (`ArmLayer.SmashHop.OnsetSpeed` 1800 px/s; power is unknown at the onset); the **swing** event carries the server's own rule (`smashEligible(contact, power)`, clean/weak, normal kind). A hop started at onset that turns out not to be a smash eases out (`FadeOut` 0.08 s).
+- *Motion (`Shared/StancePose`, `Config.ArmLayer.SmashHop`):* a signed body height over `Total` 0.36 s: dip (squeezed into the time left before contact: at most `DipTime` 0.06 s), rise to its peak `PeakAfterContact` 0.04 s after the contact (the paddle meets the ball on the way up; the contact time is never moved), fall, knee absorb, return. Applied as an offset of the LowerTorso `Root` joint (the physics root never moves; the serve posture already does the same) plus hip / knee / ankle flexion while lowered, scaled to the avatar's leg length (`DipFraction` 0.2, `RiseFraction` 0.3). The paddle arm is solved for where the torso will be at the contact. Priority: no hop during an emergency-save clip or a dive; one hop at a time. It adds to footwork, so it works while walking.
+- *Calibration found by measuring:* the leg flexion floated the feet 0.45 studs at the dip (the ready stance is already bent); `LegFlex` 0.84 plants them (0.03).
+- *Measured (scripted through the normal press + flick path, 60 fps):* both strokes: hop played on server-confirmed smashes (rise 2.43, dip −1.62 studs on an 8.13-stud leg); client and server smash verdicts agreed on every attempt (contact points within 0.13 studs); low contact (4.3 above the table) with a full-power flick: no hop; soft flick (power 0.22) at a high ball: no hop; a swing that missed (too late): no hop. Body during a hop: physics root moved 0.007 studs (noise). **While walking** (24 studs/s via `Humanoid:Move` bound after the default controls, not the keyboard): hop played, speed never below 24.0, walked 33 studs, no lock.
+- *Rendered check (stills):* the hop was held at three phases after a genuine smash (review-only `SmashHop.FreezeAt`, set through the dev bridge command `hopCfg`; `TimeScale` also exists): dip (torso 1.58 studs below standing, feet 0.03 above the floor), peak just after contact (torso 2.5 studs up, feet 2.43 above the floor, visibly higher against the table), landing absorb (feet 0.22 above the floor). Real-time video is NOT available through these tools and stills cannot be timed inside a 0.36 s action; the real-speed behaviour was verified numerically (heights, timing) and the poses by the held stills.
+- Not verified: the full motion at real speed by eye; the arm's overhead contact pose in the smash (the existing contact solver is used; the old `Config.Swing.Smash` clip is not used); a hop begun at the onset that is cancelled by a low-power finish (the cancel path exists, not exercised); emergency-save priority (guarded in code, not exercised together).
+
+**2. Old directional spin dial removed:** the whole TOP / BACK / L / R dial (frames, labels, arrow, update code, state, debug fields) is deleted from `Client/ShotFeedback`, and `Config.Feedback.SpinDial`. The contact-timing circle (`Client/ContactRing`) is untouched. Verified: no `FlickDial` / TOP / BACK / FLICK element in the UI tree while committed; the ring present.
+
+**3. Cursor trace larger:** `Config.Feedback.CursorTrace.Size` = 1.24 multiplies the display scale, radius cap, line thickness and end marker uniformly (direction cannot distort; sensitivity, thresholds, power and spin untouched). Measured on the same 140 px flick: end (28, −47) → (36, −60) px, same direction angle (59°). Also: a respawn (which only fires `reset`) now drops a live trace (`dropIfLive`). Verified clearing: focus loss, point reset and respawn while committed each drop the trace.
+**Files:** `Shared/StancePose.luau`, `Shared/Config.luau`, `Client/ShotController.luau` (smash classification, hopCfg bridge, verdict diagnostics), `Client/ShotFeedback.luau`, `Client/CursorTrace.luau`.
+**Revert:** `ArmLayer.SmashHop.Enabled = false`; `CursorTrace.Size = 1`.
+
+## Pass 11: distinct strokes, downward smash, shot VFX, rally-pace experiment (2026-11-19, awaiting your review)
+
+Reference: `docs/Not pong obsidian vault/drive-swing-animations.png` (pose / follow-through guidance). Stages 1-2 leave ball speed, reach, timing, flick thresholds, Q, controls, movement, shot physics and spin balance unchanged. Stage 3 is OFF by default.
+
+### 0. Previous fixes re-checked (rendered stills, gameplay camera)
+The contact circle is still drawn; the spin dial is gone; the smash hop shows at contact (the body is raised in the contact frame). The trace size (×1.24) was measured last pass and not re-rendered this pass.
+
+### 1. Stroke profiles and the smash follow-through (`Shared/StancePose`, `Config.ArmLayer.Strokes`)
+**Why the smash looked like a "high five":** every stroke used the same fixed follow-through offset, and the forehand one lifts the arm "up and across". A smash made contact overhead and then rose further.
+
+**Now:** the follow-through is SOLVED with the same arm solver as the contact. It aims at a blade target in the upper torso's frame, adds a torso turn, and scales by the shot's actual power. Intensity runs from SoftPower 0.35 to StrongPower 0.85.
+- **Soft returns:** compact. The blade goes 35-40% of the way to the target, with little torso turn, over 0.10-0.12 s.
+- **Strong forehand:** across to the opposite shoulder with the torso turned (+18 twist), 0.2 s.
+- **Strong backhand:** compact, out to the right / front at chest height (−14 twist), 0.16 s.
+- **Smash** (the server's smash rule, either stroke):
+  - windup: when committed to a smash-height ball, the paddle is cocked above / behind the playing shoulder (a solved pose that replaces the small cocked offset);
+  - contact: at the ball's legal height, face closed downward;
+  - follow-through: DOWN and across to the opposite hip, with the torso leaning forward and turning, 0.22 s, over the hop's landing. It never stops overhead.
+- **Emergency save (scoop):** the blade goes UNDER the ball with the face 75% open upward, then lifts up and forward, 0.24 s.
+- **All strokes:** a 0.04 s hold at the finish, then back to the ready pose.
+
+Measured torso-frame signs on the avatar: + twist turns left, + lean tilts back, + bend tilts left.
+
+**Implementation notes**
+- **Ownership:** the arm layer is still the only writer of the paddle arm (shoulder / elbow / wrist, plus the waist extra), and it runs after the Animator. No animation tracks were added. Legs and footwork are untouched apart from the existing smash hop.
+- **Frame cost:** the windup is solved once per commitment (rechecked every 0.1 s). The follow-through is solved one frame after the contact, so no frame pays for two solves.
+- **Windup trigger:** it checks whether the ball can be smashed anywhere in its window (`ShotController.smashable`, sampled once per ball), not only at the ideal moment.
+- **Method:** procedural, on the existing arm IK (`PaddleArm.solveContact`). /animate and Blender were NOT used, because a baked clip could not follow each contact point and height the way the solver does.
+- **Review-only hooks:** `ArmLayer.Strokes.FreezeAt`, `SmashHop.FreezeAt` / `TimeScale` (dev bridge commands `armCfg` / `hopCfg`).
+
+**Rendered review:** stills from the gameplay camera, of genuine swings made with press + flick, with the arm / hop held at one phase by the review hooks.
+- **Smash:**
+  - windup: paddle raised above the playing shoulder;
+  - contact: paddle high in front, body at the hop's height, server "SMASH clean";
+  - mid follow-through: paddle sweeping down across the chest while descending;
+  - finish: paddle low by the opposite hip, knees absorbing.
+- **Hard forehand finish:** across the body, torso turned.
+- **Soft forehand finish:** compact.
+- **Hard backhand finish:** compact, right / front.
+- **Scoop:** at contact, flat and face up under the ball, with the lob arc visible; at the finish, lifted up / forward.
+
+Numbers: the smash finishes 14 studs below its contact; the scoop finishes 2.8 above. Soft intensity is 0 (0.12 s); hard is 1 (0.2 s).
+
+Real-time playback was not viewable (stills only).
+
+### 2. Shot VFX from the SyphoDev pack (`Client/ShotVfx`, `Config.Feedback.ShotVfx`, `assets/vfx/MANIFEST.md`)
+**Textures:** six chosen from the pack's contact sheets, copied to `assets/vfx/` and uploaded. The library itself is untouched.
+- `hit_cross_glow_01`: glint;
+- `starburst_soft_02`: strong burst;
+- `comic_burst_glow_03` + `speed_lines_glow_02`: smash;
+- `ring_soft_08`: scoop;
+- `beams/energy_soft_01`: paddle trail.
+
+**Per stroke**
+- **Soft return:** a small glint.
+- **Strong return (power ≥ 0.6):** glint + a starburst sized by power + a short paddle trail.
+- **Smash:** gold burst + radial lines + a gold trail from the onset through the downward follow-through.
+- **Scoop:** a soft cyan ring.
+
+**Timing**
+- One accent per swing, at the predicted contact moment and point.
+- Cancelled if the server rules it a miss.
+- Shown late, at the server's contact point, if only the server says it was a hit. Serves are excluded.
+- The old ImpactFx burst is skipped while ShotVfx is on.
+
+**Cost:** one pooled holder with five rate-0 emitters (Emit per hit) and one Trail per character, found once. No lights, camera shake, flash or hit-stop.
+
+**Measured**
+- Soft, strong forehand, strong backhand, smash and scoop each gave exactly one accent, with the trail only on strong strokes and smashes.
+- After a 94-hit rally: still 1 trail and the same 6 emitters, 46 accents for 46 hits, 0 errors.
+
+**Rendered:** the smash burst + radial lines at the contact, and the trail as a gold streak down the smash path (trail facing the camera). For the capture only, the trail was held longer via `ReviewScale`.
+
+### 3. Rally-pace experiment (`Config.RallyPace`, OFF by default; `ShotLaunch.rallyPaceFactor`)
+**Rule:** returns 1-4 stay at baseline. Then each return adds 2%, capped at +10% from return 9 on. The count is the rally's hit count, which resets with every serve, replays included.
+
+**Where it applies:** the speed INPUT of ordinary shots, before their trajectory is solved.
+- Player shots: the ShotLaunch speedFactor, on the server and in the client prediction alike.
+- Bot shots: its ShotSolver speed.
+
+**Unaffected:** serves, smashes, emergency lobs and the bot's pop-ups. Backspin keeps its slower launch.
+
+**Overall cap:** MaxSpeed 130 studs/s. For example, a 125 studs/s shot only reaches ×1.04.
+
+**Measured (scripted, Studio):**
+| | baseline | experiment (capped returns) |
+|---|---|---|
+| bot return travel, hit → ideal contact | 1.067 s (offline 60 shots: 1.066) | 0.916 s (offline at ×1.10: 0.971) |
+| usable contact window (reach × timing) | 0.493 s (offline 0.482, min 0.429) | 0.435 s (offline 0.443, min 0.388) |
+| rally length (perfect scripted input) | 84 hits, ended by the test | 94 hits, ended by the test |
+| bot failed to return | 0 | 0 |
+| player timing / reach misses | 0 / 0 (41 balls) | 0 / 0 (46 balls) |
+| accepted contacts net / out | 0 / 0 | 0 / 0 |
+| client-predicted vs server landing | — | mean 0.02, max 0.05 studs |
+
+Unrecognised flicks cannot be measured with scripted input, which is always recognised.
+
+With perfect input nothing fails. The real question is a person's timing with about 12% less usable window and 0.15 s less travel at the cap.
+
+**Comparison instructions**
+1. Play a few points with `RallyPace.Enabled = false`.
+2. Set it to `true` and restart Play.
+3. Compare early / late / out-of-reach counts per mode: watch the `[Tel] TIMING` / `RESULT` lines and run `Player.NotPongTelemetry:Invoke("print")`.
+4. If ordinary central returns become noticeably harder, lower `MaxPercent` (or `StepPercent`) rather than touching reach or timing.
+
+**Files**
+- `Shared/StancePose.luau`
+- `Shared/Config.luau` (Strokes, ShotVfx, RallyPace, SmashHop review hooks)
+- `Shared/ShotLaunch.luau` (rallyPaceFactor)
+- `Client/ShotController.luau` (smashable, pace in the prediction, review commands)
+- `Client/ShotVfx.luau` (new)
+- `Client/ShotFeedback.luau` (ImpactFx skipped under ShotVfx)
+- `Client/Main.local.luau`
+- `Server/RallyService.luau` (pace for the player and the bot)
+- `Server/Striker.luau` (pace input)
+- `assets/vfx/` (new: 6 PNGs + MANIFEST.md)
+
+**Revert**
+- `ArmLayer.Strokes.Enabled = false`: back to the old fixed follow-through.
+- `Feedback.ShotVfx.Enabled = false`: back to the old ImpactFx.
+- `RallyPace.Enabled = false`: the default.
+
+**Not verified**
+- Real-time playback by eye: stills only, and the viewport was narrow.
+- Real-mouse feel of the stronger strokes.
+- How a backhand smash looks.
+- A smash while moving (checked numerically last pass, not rendered).
+- VFX at other graphics quality levels.
+- Bot reach against faster player shots, beyond these scripted rallies (the bot returned everything).
+
+**Known limits**
+- Hard drives' follow-through targets end 2-3 studs short of the target (arm limits).
+- A burst can show just before a rare late server miss verdict.
+- VFX are for the local player's strokes only; bot hits get none.
+
+**Checklist**
+1. Do soft and hard forehands look different?
+2. Is the backhand compact and outward?
+3. Smash: high windup, a drive DOWN, a finish low by the left hip, hop + landing?
+4. Does the scoop look like a scoop?
+5. Are the VFX subtle enough, never hiding the ball / ring / trace?
+6. Any doubled bursts?
+7. Pace experiment on vs off.
+
+## Pass 12: serving area, serve guide, toss ring, orange fix, logo, jump, 20% pace + rally colours (2026-11-19, awaiting your review)
+
+Reference: `docs/Not pong obsidian vault/visualsV3.png` (visual direction only). Built in four reviewable stages, and every new behaviour has a Config switch.
+
+### A. Serving area, debug visuals, serve landing guide, toss ring
+
+**Legal serving area** (`Shared/ServeRules.region/check`)
+- Anywhere ON THE PLATFORM behind your end line, including beyond either side line.
+- Derived from `Config.Platform` / `Layout` and the court-relative end line:
+  - the ball must leave the hand at least a ball radius behind the end line, inside the platform footprint;
+  - the root must be on the platform;
+  - the server still requires the feet on the ground.
+- No radius, lateral or depth limits (`CornerAllowance` and `RegionDepth` are now legacy). Nothing snaps the player or the ball.
+- Checked (server, numeric): centre, far back and both wide back corners are legal; in front of the end line, straddling it, and off the platform are refused.
+
+**Solver limits at extreme spots, found and addressed** (`Shared/ShotLaunch.serve`)
+- A 1,080-serve sweep found NO legal serve at all from two kinds of spot:
+  - the widest spots close to the end line (~11 studs outside a side line, less than ~9 behind it);
+  - very low contacts far back.
+- Brute force showed that safe launches exist there, but only in a narrow band the aimed solve missed.
+- Added:
+  - `WideSolveBudgetExtra`: +20 ms for contacts outside the table width;
+  - the eased-aim ladder now keeps the topspin, then half the spin, before dropping it;
+  - a last-resort **wide-angle scan**: 324 spin-free launches (~25-30 ms), picking the safe one nearest the aim. It runs first for spots more than `WideScanFirstBeyond` outside a side line.
+- After: 1,080 / 1,080 legal. 253 used the scan (spin-free, aim approximated), 37 eased the aim, 9 used the centre fallback.
+- Worst server solve: 124 ms (wide spot, low contact), measured before the reorder. It is still a one-off cost per serve from those spots (results are cached).
+
+**Debug visuals off for players**
+- `Config.ContactZone.Visualize = false` hides ZoneDebug's reach rings and the upright sweet-point post in front of you.
+- The floor serve-region outline appears only with `Config.Serve.ShowRegionDebug = true`.
+- Reach and serve checks are unchanged.
+- Kept: the contact ring, the toss ring, the rally landing ring / arrow, the cursor trace.
+
+**Serve landing guide** (`Client/ServeGuide`, `Config.Serve.Guide`)
+- PROVISIONAL, before the flick (aim only): a faint flat dashed line on the table and a faint hollow ring. No arrow.
+- FINAL, after the flick: the predicted serve from the real inputs, refined from the server's own launch snapshot.
+  - a white dashed 3D path through the first bounce to the RECEIVER-SIDE landing (the second bounce);
+  - a hollow white ring at the landing;
+  - a short downward arrow, tip on the ring centre, that fills tail -> tip, holds, and repeats.
+- Dashes are anchored to arc length, never drawn over or behind the ball, and stop before the ring.
+- The fill restarts only if the landing moves more than 1.5 studs.
+- The guide fades after the landing, and on the receiver's hit, a fault, a reset, a respawn or a mode change.
+
+**Toss contact ring** (`Client/ContactRing`, serve mode)
+- The rally ring's look, drawn on the tossed ball.
+- Driven by the toss's real contact phase (`ServeRules.phase`, the server's own rule: a flick starting inside [enter, exit] is legal).
+- Green for that window (~0.36 s), then fades. No slow motion.
+
+**Measured** (scripted serves in Studio)
+- Predicted receiver-side bounce vs actual: within ~0.2 studs (limited by rendered-frame granularity); 0 fill restarts.
+- Ring green from 0.67 to 1.03 s after the toss (0.36 s), matching the toss phase.
+
+**Rendered** (stills): provisional dashes, the toss ring around the ball, and the final dashed path / hollow ring / half-filled arrow.
+
+### B. Orange vulnerable-ball trail, logo
+
+**Why saves and some bot balls lacked orange**
+- The server filter required a smash window >= 0.4 s AND an apex >= 9.5.
+- That excluded emergency saves (apex ~9, window 0.27-0.36 s) and some high returns.
+
+**New rule** (`RallyService.strike`, the same for both competitors, decided at the hit)
+- Every defensive LOB is orange: player saves and bot pop-ups.
+- Other returns are orange when both hold:
+  - they open a smash window (`ShotInput.highBallWindow`: after the bounce, within the receiver's legal smash geometry);
+  - they fly high (pre-bounce apex >= 16) or sit up (post-bounce apex >= 10).
+
+**Measured**
+
+| Shot | Smash window | Post-bounce apex | Flight apex | Trail |
+|---|---|---|---|---|
+| Drives | 0-0.30 s | 7.6-9.7 | 11.6-15.3 | white |
+| Saves | | 9.0-9.3 | 17.1-17.4 | orange |
+| High returns | | 10.8-14.9 | 17.4-29.7 | orange |
+
+By the smash rule alone, most bouncing drives are technically smashable with tight timing. Orange marks only the clearly high ones; the thresholds are the settings `MinApex` / `MinFlightApex`.
+
+**Client**: a new hit clears the previous orange segments at once, and a new orange shot never carries the last one's segments.
+
+**Logo**
+- `tools/ball_textures.py`: LOGO_LON 92 -> 64.4 (70%). The logo's bounding box went from 1044x785 to 731x550 texels, with the same aspect and centre.
+- Uploaded as `rbxassetid://76692915067548` and set on the template's `BallVisual.Print.ColorMap` in Edit.
+- Backups: the old id is kept in the attribute `PreviousLogoColorMap`; the old PNG is in `assets/ball/backup/`.
+- Persisted across Play/Stop; **save the place** to keep it. Close-up checked in a render.
+
+### C. Normal, lower jump (`Config.Movement.Jump`, `Client/JumpController`, `Server/MovementService`, `Shared/StancePose`)
+
+**Before**: the default jump scaled with the 3.37x avatar (JumpPower 91.8): ~21.5 studs high, ~0.94 s in the air.
+
+**Now**: Height 6 / AirTime 0.42.
+- A VectorForce on the local root while airborne adds character-only gravity; `workspace.Gravity` stays 196.2.
+- A matching JumpPower (x TakeoffScale 0.9).
+- Measured: the Humanoid's Jumping state holds the take-off speed for ~0.12 s, so the client ends that state after one frame (`CutJumpHold`).
+- Real held-Space test: **6.2 studs** apex; deceleration 274-278 studs/s^2; airtime ~0.43 s (calculated).
+
+**Space**
+- Jumps when it is not your serve: the bot's serve, rallies, between points, roaming.
+- On your serve it only tosses (tested: toss, no jump).
+
+**Animation**
+- While airborne, the stance / footwork tracks stop so Roblox's jump / fall animations play (seen: `jump` / `fall` tracks, no NP stance mid-air).
+- They blend back 0.18 s after landing.
+- The paddle arm layer keeps running.
+- The smash hop never starts in the air.
+
+**Reach**: rules unchanged (horizontal reach follows the root; the contact height band stays floor-relative). No bonus.
+
+### D. Rally pace cap 20%, rally colours, speed streaks
+
+**`RallyPace`**: now **Enabled = true**, MaxPercent 10 -> 20.
+- Step 2%; returns 1-4 stay at baseline; the cap is reached at return 14.
+- Computed from each shot's baseline, never compounded.
+- Excluded: serves, smashes, saves and pop-ups. MaxSpeed stays 130.
+
+**Accessibility** (live, scripted perfect input)
+
+| | Baseline (n 20) | At the cap (n 26) |
+|---|---|---|
+| Travel time | 1.037 s | 0.777 s (-25%) |
+| Usable window, mean | 0.432 s | 0.333 s (-23%) |
+| Usable window, min | 0.237 s | 0.154 s |
+
+- A clear regression compared with +10% (-12%). Not compensated: reach and timing are untouched.
+- The bot failed to return: 0 times in these runs.
+
+**Rally colours** (`Feedback.Trail.RallyColors`)
+- White (0-4%) -> yellow (6-10%) -> red (12-18%) -> purple (20%).
+- Plateaus, because a straight yellow -> red blend looked orange at 8-10%.
+- 0.15 s ease, reset at each serve, transparency profile unchanged, orange overrides.
+- Measured per hit in rallies: exact progression and resets.
+
+**Speed streaks** (`Feedback.Trail.SpeedStreaks`, SyphoDev `beams/speed_streaks_glow_04`)
+- One extra Trail on the ball's follower, starting from 2%.
+- Opacity up to 0.35 at the cap. The first 18% next to the ball stays clear. Yields to orange.
+- No accumulation: camera / PlayerGui descendants identical before and after rallies (294 / 249).
+
+### Files, revert switches, open items
+
+**Files**
+- Shared: `Shared/ServeRules`, `Shared/ShotLaunch`, `Shared/ShotInput`, `Shared/StancePose`, `Shared/Config`.
+- Client: `Client/ServeInput`, new `Client/ServeGuide`, `Client/ContactRing`, `Client/BallTrail`, new `Client/JumpController`, `Client/Main.local`.
+- Server: `Server/RallyService`, `Server/MovementService`.
+- Assets and tools:
+  - `tools/ball_textures.py`;
+  - `assets/ball/ball_logo_overlay.png` (+ backup);
+  - `assets/vfx/speed_streaks_glow_04.png`;
+  - `assets/vfx/MANIFEST.md`.
+
+**Revert**
+- `ContactZone.Visualize` / `Serve.ShowRegionDebug`: developer visuals.
+- `HighBallTrail.MinApex` / `MinFlightApex` / `MinWindow`: orange thresholds.
+- `Movement.Jump.Enabled = false`: the old jump.
+- `RallyPace.Enabled = false`, or `MaxPercent = 10`.
+- `Trail.RallyColors.Enabled`, `Trail.SpeedStreaks.Enabled`.
+- Logo: set `Print.ColorMap` back to the `PreviousLogoColorMap` attribute.
+
+**Not verified**
+- Real-mouse play of any of this.
+- Full-speed footage (stills only).
+- The provisional aim line, which the body partly hides from the default camera.
+- The orange line under the purple shot-preview arrow (the arrow overlaps it on your own lobs).
+- The purple rally trail vs the purple preview arrow.
+- The orange-ish topspin tint on white-stage trails vs the orange cue.
+- The wide-scan serves' aim accuracy, by eye.
+- Jumping during a committed swing.
+
+**Checklist**
+1. Serve from the wide / far corners: legal, and the guide sensible?
+2. Provisional vs final guide readable? Arrow tip on the ring?
+3. Toss ring green when the flick works?
+4. No rings or post around you?
+5. Saves and bot pop-ups orange? Ordinary drives white / in the stage colour?
+6. Logo size OK?
+7. Jump height and feel? Space on your serve tosses only?
+8. Is the 20% cap too hard? (Lower `MaxPercent`.)
+9. Colours and streaks subtle enough?
+
+## Pass 13: visible trails, flat serve guide shown before the strike, match-over ball in hand, distinct previews (2026-11-19, awaiting your review)
+
+Answer to the post-hit question: **A**. After contact, hide the serve prediction (path, ring, arrow); the ball stays visible.
+
+### 1. Ball trail and speed strands
+
+**Diagnosis**
+- **Base trail:** it was enabled and followed the rendered ball, but read as missing. Causes:
+  - width 1.0 tapering to 0.15;
+  - lifetime 0.4;
+  - flights seen almost end-on from the gameplay camera (foreshortened).
+- **Strands:**
+  - they only started at the 2% stage, at opacity 0.05-0.35;
+  - their transparency peaked at a single point about 1/4 along the ribbon;
+  - the texture (`beams/speed_streaks_glow_04`) was nearly invisible.
+- **Shot preview arrow:** it was purple (the same colour as the capped trail) and lingered ~1 s over the real flight.
+
+**Now** (`Config.Feedback.Trail`, `Client/BallTrail`)
+- **Base trail:**
+  - Width 1.5 (about the ball), TailWidth 0.35, Lifetime 0.55, LightEmission 0.8;
+  - transparency profile unchanged (0.25-0.7 by speed);
+  - spin tint OFF (`TintStrength` 0; it gave orange-ish topspin trails). Spin physics unchanged.
+- **Strands:**
+  - texture cut from your Trails sheet (`sprites/Trails/trail2.png`, top-left fan) into `assets/vfx/trail2_strands_tip.png`;
+  - present from the opening rally at MinOpacity 0.25, rising to MaxOpacity 0.6 at the 20% cap;
+  - Width 2.6, wider than the base, so they show beside it;
+  - opacity held over most of the length; clear at the ball; yields to orange.
+- **Rally colours:** white -> yellow -> red -> purple stages as in Pass 12.
+
+**Rendered (gameplay camera, normal speed, stills)**
+- Opening rally: a white ribbon arcing over the net.
+- Capped stage: a pink-purple ribbon (purple reads pink over the orange table).
+- Save lob: the thin orange wavy line from the table up to the ball, no preview over it.
+- Review captures (side camera, review only):
+  - capped ribbon along the real bounce;
+  - strand texture alone shows as distinct white wisps.
+
+**Limits**
+- From the default camera, straight-down-the-middle flights are partly hidden behind the avatar (your cone hat).
+- Strands inside the bright base ribbon remain subtle.
+
+### 2. Serve guide: flat, thinner (your follow-up)
+- First made ball-wide and camera-facing, as asked. You then asked for "too thick, should lay flat on the table", so now:
+  - the dashes lie FLAT ON THE TABLE along the predicted flight's ground track (only over the table);
+  - width = DashWidthScale 0.45 x the measured BallVisual diameter (1.5) = ~0.68 studs;
+  - DashLength 1.6, DashGap 1.1, DashThickness 0.06;
+  - DashTransparency 0.25 final, 0.45 provisional.
+- The receiver-side landing (second bounce) is unchanged.
+
+### 3. Landing ring + arrow BEFORE the strike
+- From the ball in your hand (serve preparation), through the toss, until contact: hollow ring + downward arrow filling tail -> tip.
+- Before the flick the guide is a **representative serve**:
+  - `Guide.Representative`: power 0.5, no spin, clean, at the toss's typical contact point, your current aim;
+  - solved by the server's own `ShotLaunch.serve`;
+  - drawn fainter; the hint says "guide = a typical serve; your flick sets the real one".
+- It is re-solved only when the aim (0.03) or the hand position (0.75 studs) changes, at most every 0.12 s.
+- The fill clock never restarts for a moving target. Measured: 0 restarts across 18 re-solves and through a whole toss.
+- At the flick it switches to the predicted serve from the real inputs (no delay to the hit). At contact it fades in 0.12 s (answer A).
+- The arrow has a pixel floor (`ArrowMinHeightPx` 40), because from the serve camera it was 23 px. The ring is 2.0 studs.
+- `MarkerOnTop` stays false: with it on, the arrow did not appear in Studio captures at all.
+
+**Rendered**
+- Thin flat dashes on the table from the serve camera.
+- From a raised review view: the dashed line, the ring and the arrow at the landing, before the toss.
+
+**Limit**: from the low serve camera (~33 studs behind, ~7 above the table) the receiver's half sits behind the net, the bot and the avatar, so the ring / arrow are small there.
+
+### 4. Post-hit visibility
+Done as answered (A): the serve guide hides at contact. The gameplay ball is never hidden.
+
+### 5. Match over: ball in hand, explicit new match
+
+**Server** (`RallyService`)
+- On MatchOver the rally simulation stops and the one ball goes to the seated player's free hand (the existing hand hold). It rides the hand on and off the platform; the ball part has no collision.
+- `StartMatchRequest` / `StartMatchResult` (new remotes) validate:
+  - the requester is the seated player;
+  - the state is MatchOver;
+  - the character is alive and on the platform;
+  - a 1 s rate limit.
+- On success `match:rematch()` runs: scores, server and rally count reset -> ReadyToServe -> the same ball goes into the normal serve hold.
+- `MatchState:clearIfGameOver()`: a player arriving after a finished match starts at 0-0.
+
+**Client** (`Client/MatchOverUI`)
+- "Start new match [E]" button on the platform; off it, "Return to the platform to start a new match".
+- Space still jumps; it tosses only on your own serve.
+
+**Tested** (keyboard input sent by Studio + scripts)
+- Match end (0-11): ball on the palm, the button showing.
+- Off the platform: the hint shows; E sends nothing; a forged request is refused by the server.
+- Respawn during match-over: the ball moves to the new character's hand, still one ball.
+- Two rematches by E: 0-0, your serve, 1 BallVisual, 1 guide.
+- No errors or warnings; 60 fps.
+
+**Rendered**: the ball in the left hand with the match-over panel.
+
+### 6. Conflicting visuals
+- **Shot preview arrow** (`Feedback.Arrow`):
+  - colour changed to BLUE (core 170,215,255 / halo 40,110,255);
+  - risky colour now pale blue (was amber);
+  - RevealTime 0.15, HoldTime 0, FadeTime 0.15 (was ~1 s total).
+- **Spin tint**: off.
+- **Rendered**: a blue preview distinct from the white trail; none over the orange save.
+
+**Files**
+- Client: `Client/BallTrail`, `Client/ServeGuide` (reworked), `Client/ServeInput`, new `Client/MatchOverUI`, `Client/Main.local`.
+- Server: `Server/RallyService`, `Server/MatchState`, `Server/Main.legacy`.
+- Shared: `Shared/Config`.
+- Assets: `assets/vfx/trail2_strands_tip*.png`, `assets/vfx/MANIFEST.md`.
+- Unchanged: the 20% pace, hit range, timing, controls, jump, physics and logo.
+
+**Not verified**
+- Real-mouse play.
+- Video (stills only).
+- Multiplayer with two humans (one seat; logic only).
+- The rally preview's gold smash colour, still close to the yellow stage.
+
+**Checklist**
+1. Trail visible on opening returns?
+2. Colours change through a long rally? Strands noticeable late?
+3. Saves / pop-ups orange?
+4. Flat dashed serve line, thin enough?
+5. Ring + arrow visible before you toss; the arrow fills without restarting while you aim?
+6. Guide gone at contact?
+7. Match end: ball in hand; E / button starts only on the platform?
+8. Walk off and back with the ball?
+
+## Pass 14: comet ball trail built from your Trails sheets (2026-11-20, awaiting your review)
+
+You pointed out that Pass 13 did not use `trail1.png`, `trail2.png`, `9251.jpg` and `9247.jpg` to redesign the trail. This pass does.
+
+### Textures (`tools/trail_textures.py`, `assets/vfx/comet_*.png`, `assets/vfx/MANIFEST.md`)
+- Five textures cut from the comets on `sprites/Trails/9251.jpg` (white, so the game tints them by stage):
+  - main ribbon body (top-right streaky comet);
+  - white-hot core (slim bottom-right comet);
+  - fine strands (centre-right comet);
+  - sparkle dust (centre-left comet);
+  - smoky wisps (bottom-left comet).
+- `9247.jpg` is the colour reference: white-hot head, stage-coloured body.
+- `trail1.png` / `trail2.png` were reviewed. Their strand fans are covered by the 9251 strand / body cuts; the old trail2 cut is retired.
+- The JPG sheets have the transparency checkerboard baked in. The tool:
+  - rebuilds the checkerboard from the image (cell edges, a smooth tone per checker colour);
+  - inverts each comet's blend with it (a blend factor measured per comet, because the stock artwork layered them differently);
+  - damps what is left at the cell scale.
+- Some faint checker shimmer remains inside the brightest parts at full texture size. It is not visible at game scale in the renders.
+- The library files are untouched.
+
+**Found: Roblox Trails draw the texture rotated.** Verified in Studio with test textures:
+- the texture's TOP row is drawn at the moving part, and its height runs along the trail's length;
+- its width spans Attachment0 -> Attachment1.
+
+The Pass 13 strand texture was horizontal, so it was drawn sideways, which is part of why it read as faint wisps. The new textures are saved head-at-top.
+
+### Trail layers (`Client/BallTrail`, `Config.Feedback.Trail`)
+- The path is still drawn from the rendered ball every frame. All objects are created once on the same follower, with no per-frame objects.
+- **Main ribbon:** now textured (`Trail.Texture`), Width 2.4.
+- **Comet shape:** every layer starts narrow at the ball (`HeadWidth`), is full at `HeadSwell`, then tapers.
+- **Layers** (`Trail.Comet.Layers`). Each fades in between its FromPercent and FullPercent of the rally-pace stage, and its opacity also follows ball speed:
+  - **Core** (1.1 studs, white-hot): from the opening.
+  - **Strands** (3.6): from the opening, stronger toward the cap.
+  - **Dust** (4.2): from the yellow stage (5%).
+  - **Wisps** (4.0): from the red stage (11%).
+  - At the purple cap everything is at full.
+- **Light emission drops as a stage colour takes over** (`ColorLightEmission`): additive glow had washed purple to pink over the orange table.
+- **Red stage is now crimson** (225, 20, 60): (255, 80, 70) nearly vanished over the orange table once the trail was textured. White, yellow and purple are unchanged.
+- **Struck balls only:** the comet layers never show on a toss, only on a ball in free flight after at least one hit.
+- **Orange cue:** all layers yield to the orange vulnerable-ball line, as before.
+- `PreviewStagePct` (style override): forces a stage on a separate trail instance, for review renders only. The game never sets it.
+
+### Checked
+**Rendered, review camera beside the table.** The real BallTrail code on a parabolic flight with a bounce, in slow motion with lifetimes stretched by the same factor:
+- white: a streaky white comet with a narrow head;
+- yellow: a gold comet;
+- crimson: a raspberry-red comet, distinct from the table;
+- purple: a violet comet with dust specks behind it.
+
+**Rendered, gameplay camera (Play).** The same harness:
+- purple, cross-court: visible but small;
+- a straight-down-the-middle ball is mostly behind the semi-transparent avatar.
+
+**Real flow** (Space toss + a scripted strike; two legal serves; the bot returned):
+- the comet layers came on for the serve flight and the bot's return (core about 0.5, strands about 0.3 at stage 0);
+- they were off during the toss and after the point;
+- no errors or warnings in the console.
+
+### Not checked / limits
+- No real-mouse play.
+- No rally reached the yellow / red / purple stages in the real flow. Those stages are shown only by the review renders.
+- The serve / rally camera is 40-90 studs from the action, so texture detail is small there.
+- Video was not possible (stills only).
+- The paddle swing trail (`ShotVfx`, beam texture `energy_soft_01` on a Trail) is probably also drawn sideways. Not changed.
+
+**Files**
+- `Client/BallTrail`, `Shared/Config`.
+- New: `tools/trail_textures.py`, `assets/vfx/comet_{body,core,strands,dust,wisps}.png`.
+- `assets/vfx/MANIFEST.md`.
+
+**Checklist**
+1. Opening return: a white comet with streaks, and no trail on the toss?
+2. Through a long rally: gold, then crimson with smoky wisps, then purple with dust?
+3. Narrow at the ball, never covering it?
+4. The orange save line still takes over cleanly?
+
+## Pass 15: trail taper reversed, colours by return count, no mid-air double jump (2026-11-21, awaiting your review)
+
+### 1. Trail taper
+- **Cause:** a Trail's `WidthScale` / `Transparency` keys run from 0 = the newest point (at the ball) to 1 = the oldest. Pass 14 deliberately started narrow at key 0 (`HeadWidth` 0.35, full at 0.18), and three of the layer textures (strands, dust, core) also started where the comet is still narrow. Both made a tail that grew away from the ball.
+- **Now:**
+  - `Trail.Taper` (position, width fraction): 1 at the ball, 0.9, 0.58, 0.3, then `TailWidth` at the oldest end. Every layer uses it (`taperWidth` in `Client/BallTrail`). `HeadWidth`, `HeadSwell`, `Comet.HeadWidth` and the layer `HeadWidth` values are removed.
+  - `tools/trail_textures.py`: the strands, dust and core cuts now start where the comet is widest (`head_pad`). Re-uploaded as `100596374827505` (core), `94684561859469` (strands), `123517828766864` (dust). The previous PNGs are in `assets/vfx/superseded/pass14_comet/`. Body and wisps are unchanged.
+- Unchanged: transparency profile, speed accents, `HeadClear` (the part nearest the ball stays clear of the layers), the orange high-ball override.
+- **Rendered (Play, real BallTrail code on a scripted crossing flight, slow-motion lifetimes):**
+  - gameplay camera: a gold trail, broadest at the ball, thinning away from it;
+  - a review view from beside the table (camera forced for the shot): purple (30 returns) and white (0 returns) trails broadest right behind the ball and fading to the far end, no bulb, ball readable (a white trail on the white ball is the least contrasty case).
+- From the default camera the flight is short and mostly behind the avatar, so the taper is small there.
+
+### 2. Colours by return count
+- `Trail.RallyColors` is now `ReturnInterval = 10` plus `Colors` (white, yellow, crimson, purple). Stage = `floor(returns / ReturnInterval)`, capped at the last colour: 0-9 white, 10-19 yellow, 20-29 red, 30+ purple.
+- **Source of the count:** `returns = BallView info.hits - 1`. `info.hits` is the server referee's counter (`RallyReferee:onHit`), incremented once per accepted legal paddle hit by either side (a serve is hit 1, so it is not a return) and reset to 0 by `startServe` (every point or let). Never from ticks, bounces, predictions or duplicate messages. A toss or held ball is stage 0.
+- The colour **switches hard** (no blend), so yellow to red never passes through orange. The comet layers fade in by stage (`FromStage` / `FullStage`: dust from yellow, wisps from red); the glow eases over `BlendTime`.
+- Rally pace (`Config.RallyPace`, 20% cap) is untouched; the trail no longer reads it.
+- The orange high-ball line still overrides. When it ends the colour is the stage's (the base trail's colour is never blended with orange).
+- `PreviewReturns` (style override) forces a count for review renders only; the game never sets it.
+
+### 3. Mid-air double jump
+- **Root cause (measured):** on this x3.37 rig the Humanoid's floor sensor reports a floor (`FloorMaterial` set, states Landed then Running) whenever the root is within about 16 studs of the ground, i.e. through the whole 6-stud jump (the real ground was 10-20 studs down by raycast). With Space held, the control script keeps setting `Humanoid.Jump`, so each false "landing" re-launched the character. In a 1.6-s held test the log showed Jumping states at 0.03, 0.30, 0.83 and 1.62 s and vertical speed back at +41 / +50 studs/s mid-air; a 2.5-s hold gave 7 jump entries.
+- Not the cause: duplicate listeners, the server, or the serve input (the Space action is sunk during your own serve). `CutJumpHold` (forcing Freefall one frame after take-off) is kept.
+- **Fix (`Client/JumpController`, one owner for jump gating):**
+  - grounded = a raycast from the root (5 rays, 1.5 studs apart) finds the floor within `GroundTolerance` 0.8 of the rest height AND the root rises slower than `MaxRiseGrounded` 12 studs/s. The Humanoid's own floor state is not used.
+  - anything not grounded (a jump, a ledge, a false "landing") latches AIRBORNE: the Jumping state is disabled and `Jump` is forced false until the character is grounded again AND the input has been released for `HeldGrace` 0.08 s (a fresh press is needed). Held = `Humanoid.Jump` or the key / gamepad A state.
+  - respawn starts latched (a Space held from the old life cannot jump the new character) and unlatches on release.
+  - the extra-gravity force now follows the raycast airborne flag, not the Humanoid's state.
+- Config: `Movement.Jump.GroundTolerance`, `MaxRiseGrounded`, `GroundReach`, `HeldGrace`. Jump height and air time are unchanged: single-tap apex 6.19 studs and 0.38 s before; 6.0-6.4 studs and 0.38 s after.
+
+### Tests (Studio Play)
+**Scripted / property checks**
+- Colour thresholds on a fresh BallTrail instance: stage colours at returns 0 and 9 (white), 10 and 19 (yellow), 20 and 29 (crimson), 30 and 45 (purple). 19 to 20 sampled every frame: yellow, yellow, then crimson (no intermediate colour). 35 to 0: white at once.
+- Jump, simulated held / pressed input (`Humanoid.Jump` written each frame): hold 2.5 s = 1 jump; mashing every 0.1 s for 2 s = 1 jump (the 0.1-s gaps are shorter than HeldGrace); hold, release 0.3 s, press = 2 jumps; two single taps after landing = 1 jump each, apex 6.2-6.4; respawn then tap = 1 jump, apex 5.96.
+- Walk off a ledge (a client-only test slab, removed) with Space pressed 0.04 s after the root passed the edge: 0 jumps.
+
+**Real input**
+- Real Space key held 2.5 s while the bot served: 1 jump (counter 9 to 10). Real Space during your own serve: tosses, no jump (counter unchanged).
+
+### Not verified
+- No rally reached 10 / 20 / 30 returns in play. The thresholds are checked on a fresh trail instance and the count is traced in code (`RallyReferee`), not observed over a 30-return rally.
+- The real (non-harness) trail was not sampled through a rally: the harness clones also registered `NotPongTrailDebug` bridges, so that poll was unusable.
+- A real key press after release (a fresh press) and a held key through a respawn were checked with simulated input only.
+- Smash hop and serve animation: unchanged code paths, not re-watched.
+- Real-mouse play; video.
+
+**Files**
+- `Client/BallTrail`, `Client/JumpController`, `Shared/Config`, `tools/trail_textures.py`, `assets/vfx/comet_{core,strands,dust}.png`, `assets/vfx/MANIFEST.md`, `assets/vfx/superseded/pass14_comet/`.
+
+**Checklist**
+1. Is the trail broadest behind the ball and thinner away from it?
+2. Yellow after the 10th return, red after the 20th, purple after the 30th; white again at the next serve?
+3. Does the orange squiggle still take over, and the stage colour return after it?
+4. Hold Space: one jump only; release and press again after landing: a new jump.
+5. Walking off the platform edge: no air jump.
+
+## Coastal pier arena, pass 1: structural blockout (2026-11-21, awaiting your playtest)
+
+Built from the corrected design (`docs/Not pong obsidian vault/Platform.png`). This pass is the STRUCTURE ONLY: scenery, bleachers, pavilion, spectators, VFX and lighting are deferred until you have reviewed the shape. No bridges, no sand / planting ring at deck height, no opaque blue band.
+
+### Layout (centre outward, every band adjoining the next)
+| Band | Radius (studs from table centre) | Top height |
+|---|---|---|
+| Turf court (`NotPongArena/Platform`, now a disc) | 0 - 56 | 1.00 (unchanged playing floor) |
+| White rim | 56 - 57.5 | 1.04 (a 0.04 hairline lip) |
+| Walkable glass | 57.5 - 81.5 | 1.04 rising to 2.48 |
+| Turquoise trim | 81.5 - 82.7 | 2.48 - 2.55 |
+| Warm promenade | 82.7 - 98.7 | 2.55 - 3.51 |
+| Railing | 98.2 | 9.5 tall (about hip height on the avatars) |
+| Beach | below | -12 (the old Baseplate top was 0) |
+
+- **One height function** (`PierBuilder.heightAt`): flat across the rim, then `RiseSlope` 0.06 studs per stud outward (about 3.4 degrees, 2.5 studs over all bands). All bands use the same 64 divisions, so joints line up, and each segment's top is a planar trapezoid on the same cone: no steps between materials.
+- **Glass:** each segment is one CSG union (no internal faces showing through), pale blue, Transparency 0.6, Glass material, 0.6 thick, collision = each panel's hull. Slim radial mullions under every joint. Nothing opaque beneath it.
+- **Air gap:** about 12 studs from the glass underside to the beach. Under the court a 1.5-stud deck slab (cosmetic). 88 columns in 4 rings (r 30, 56.8, 81.9, 97.6), 1.6 studs thick.
+- **Beach / water (blockout):** the Baseplate is now sand at y -12, cut at x = -150. Beyond it there is a sloping shore strip, turquoise shallows and deep blue water (`NotPongCoast/Sea`). One plain ramp from the promenade down to the beach at +X (railing opening = ramp width).
+- **Parameters:** `Config.Pier` (ring widths, slope, thicknesses, segments, beach height, rail height, column rings, ramp angle / width / run) and `Config.Platform.Radius`. Rebuild in Edit mode with `Server/PierBuilder.build(Config)` (replaces only `Workspace.NotPongCoast`).
+
+### Court radius: measured, not taken from the diagram
+- 400 simulated returns (shared physics, every power / spin / aim / arc, 15% smashes): the ball falls to 8 studs above the floor at a median 36.9 / p98 48.4 studs from the table centre, and to 3 studs (save height) at p98 54.2.
+- Radius 56 = the old slab's half-length along the table (55.6), so nothing is shorter along the table axis; sideways the court is wider than before (56 vs 33.25).
+- Table, ball, paddle, net sizes, floor height, spawns: unchanged.
+
+### Gameplay zone changes (court-shape aware)
+- New `Shared/CourtShape` (disc or rectangle, from `Config.Platform`). It is used by:
+  - `Client/PlatformZone` and `Client/CharacterFade`: on / off court = inside the turf disc (same hysteresis and dwell). The glass and promenade count as OFF the court: standard camera, no fade, no stance, as with the old slab's surroundings.
+  - `Shared/ServeRules`: the serve needs the root and the release point on the disc (refusal "stand on the court").
+  - `Server/RallyService` (start new match): on the disc.
+  - `Server/BotController`: the old lateral limit (30.25) is kept, and never past the disc's edge. Bot movement is unchanged.
+- `Server/ArenaBuilder`: the Platform is a Cylinder part with its axis vertical (`platformGeometry`). Play-time validation checks its size and shape. No warnings at Play.
+- The old rectangular platform no longer exists (one `Platform` part, the disc). No invisible floors.
+
+### Checks
+**Rendered views (Edit, real geometry)**
+- Top-down: turf, rim, glass with joints, trim, promenade, railing, ramp.
+- Side section (a thin slice of copies through the centre, true scale, near-orthographic): flat turf on its deck, the glass, trim and promenade rising gently outward, open air, the beach well below, plus a 17.5-stud avatar-height bar.
+- Isometric overview.
+- Low exterior from the beach: open air under the deck, slim columns, the glass framing visible from below.
+
+**Rendered views (Play)**
+- Gameplay serve camera: table, net and ball readable. The glass shows the sand and columns through it; the slope is subtle.
+- Standing on the glass: the beach, columns and mullions show through the glass.
+
+**Scripted (Play)**
+- Walk court -> glass -> trim -> promenade (r 90.8) and back: 3.2 s each way at full walk speed (no snag). The root rose 11.12 -> 13.24 (expected about 2.0), floor material Glass on the glass. Camera Scriptable -> Custom off the court and back on return; avatar fade 0.6 on / 0 off.
+- Serve check: root at r 33.6, 48 and 51 behind the end line = legal; r 58 and 61 = refused ("stand on the court"); in front of the end line = refused. A real Space toss on the court was accepted by the server.
+- Console: no warnings or errors at Play. ArenaBuilder validation: 0 issues.
+- Edit persistence: after Play / Stop the pier (1001 instances, 64 glass unions), the disc court and the lowered beach are intact; exactly one Platform.
+
+### Inferred / not verified
+- Hidden construction is assumed: deck slab, mullions and columns are a plausible structure, not an engineered one.
+- Real-mouse rallies on the new court, bot rallies near the court edge, an emergency save at the disc's edge.
+- The ball physics floor is still an infinite plane at y = 1. A ball that goes beyond the court over the glass (top up to 3.5) or past the pier would show on an invisible plane. This existed with the old slab too (its surroundings were at y = 0).
+- Glass transparency cost: 64 transparent unions; no frame-rate measurement yet.
+- The world edge is the 512-stud baseplate square (blockout).
+- The place file is not saved; nothing is published.
+
+**Files**
+- New: `Shared/CourtShape`, `Server/PierBuilder`.
+- Changed: `Shared/Config` (`Platform` disc + `Pier`), `Shared/ServeRules`, `Server/ArenaBuilder`, `Server/RallyService`, `Server/BotController`, `Client/PlatformZone`, `Client/CharacterFade`.
+- Studio: `Workspace.NotPongCoast` (new), `NotPongArena/Platform` (disc, turf colour), `Baseplate` (sand, lowered).
+- Backup: `ServerStorage/NotPongBackup_2026-11-21_PreCoastPier` (the arena and Baseplate before this pass).
+
+**Checklist**
+1. Does the court feel big enough, and not too big, for rallies and saves?
+2. From the gameplay camera, is the glass readable without distracting from the table?
+3. Is the rise subtle enough, and the air gap visible enough?
+4. Walk out over the glass to the railing and back: any snag, camera or stance problems?
+5. Ramp position (+X) and the number of columns OK before detailing?
+
+## Coastal pier arena, pass 2: structural cleanup (2026-11-21, awaiting your review)
+
+Approved and kept from pass 1: court size, glass readability, the gentle rise and air gap, walking / camera transitions, ramp position and column count. No scenery, bleachers or pavilion yet.
+
+### 1. Turf-to-rim gaps
+**Cause (inspected, not assumed):**
+- The turf was the Platform part itself, a Cylinder. Its COLLISION is a true circle (raycast edge 56.00-56.02 studs at every angle tested).
+- But Roblox DRAWS a large cylinder as a coarse polygon with long straight sides.
+- The rim's inner edge was a separate, finer 64-gon (vertices at 55.92), 0.04 studs higher.
+- Wherever the turf polygon's straight sides cut inside the rim edge there was an open sliver, through which you saw the dark deck slab 1 stud below: the dark wedges.
+
+Not gaps between generated pieces, not wrong angles or heights.
+
+**Fix:**
+- Every circular edge now comes from the same centre and radii with the same 128 divisions (a 128-gon is within 0.017 studs of the true circle at the court edge).
+- The Platform disc stays as the court's COLLISION (exact circle, unchanged radius and height) but is invisible.
+- The visible turf is:
+  - one plain disc (`TurfCore`, 0.005 below the surface);
+  - a 2.5-stud ring of exact 128-gon pieces (`TurfEdge`) whose outer vertices are the rim's inner vertices: no gap, no overlap.
+- The rim is now flush with the turf (`RimLift` 0, was a 0.04 lip). Its white fascia reaches the deck's underside, and the deck slab is a 128-gon too.
+- Tested alternatives, rejected on what rendered:
+  - a fan of 256 exact wedges: corner error at most 0.0025 studs, yet faint dark specks from the gameplay camera;
+  - CSG unions of that fan: more specks;
+  - a single plain part showed none, hence the core + ring.
+- A local probe (backing and deck tinted red / blue on one client) confirmed the specks were edge shading, not see-through holes.
+
+**Result (rendered):**
+- Close-up: continuous circular edge into the white rim, no dark wedges.
+- Overhead, far isometric and gameplay views clean.
+- Residual: at most a faint dotted line of single pixels can appear right at the rim at grazing distance (the ring's joints). Not visible in the close or overhead views.
+
+### 2. Dark borders + wider turquoise
+- Sequence: glass -> dark grey inner border 0.35 -> turquoise 1.8 -> dark grey outer border 0.35 -> promenade.
+- Each band is its own full-depth part, on the same height function, flush and walkable. Turquoise is SmoothPlastic (not Neon), dark grey (58, 62, 68), not black.
+- Court, rim and glass widths are unchanged. The promenade, its outer edge (now r 100.0, +1.3), the railing, the column rings (now derived from the bands) and the ramp moved out consistently.
+- Config: `Pier.InnerBorderWidth`, `TrimWidth`, `OuterBorderWidth`, `Pier.Colors.Border` / `Trim`.
+
+### 3. Ball over an invisible floor
+**Investigated:**
+- The server simulation (`RallyService`), every client prediction (`BallView`, `ServeGuide`, `ShotController`, `ShotInput`, `ShotLaunch`, `BotController`) and the referee all use ONE world, `Shared/TableWorld`. Its floor was an infinite plane at y = 1.
+- The referee ends the point on the first `"floor"` contact (`onDead`). After the point the ball kept bouncing on that plane, so beyond the court it visibly landed on air.
+
+**Now (`BallPhysics.groundAt`, `TableWorld.world.ground`):** an analytic ground, the same radii and height function that `PierBuilder` builds (`Shared/CourtShape.deckHeightAt`):
+- the court and rim flat at y = 1;
+- the glass, borders, trim and promenade on the 0.06 slope (with the matching tilted normal);
+- the beach at -12 beyond the pier;
+- a slab edge at the pier's rim: a ball below the deck has the beach as its ground (open air under the glass), and a ball hitting the pier's side bounces back out.
+
+**Point resolution:**
+- The first ground contact still ends the point, exactly as before.
+- Over the court nothing changed. Over the raised deck the contact can come a few milliseconds sooner.
+- Beyond the pier, the point ends at the moment the ball crosses the old floor height (a `"floor"` event with surface `"out"`), so no point lasts longer than before. The ball then keeps falling to the beach for the eye only.
+- Crossing the turf edge itself never ends a point.
+
+**Measured:**
+- 400 simulated returns (all powers / spins / arcs, 15% smashes): the dead-ball moment was identical to the old plane in 391 / 393; the other 2 landed on the deck 0.004 s sooner. The contact order (table / net / side / floor) was identical in all 393.
+- Drop tests: court contact at y 1.75 (unchanged); glass at r 70: 2.50; promenade at r 95: 4.00; beyond the pier: the "out" event at the old plane, then the beach at -11.25; rolling in at beach level: passes under the deck; hitting the pier's side at y 2.5: bounces back out.
+- Real bot serves in Play: the server ball's bounce low points sat on the court (1.75) and on the slope (1.85 at r 58.7, 2.06 at r 61.8, 2.20 at r 64.7, each = the deck + ball radius).
+- The client's rendered ball showed the same bounces (r 57.6 / 62.0 / 64.4 vs the server's 57.6 / 61.8 / 64.7, within frame sampling).
+- Emergency saves (`ShotLaunch.emergencyLob`) from r 44-54.5 behind the player's end, 2-5 studs up: 60 / 60 first land on the opponent's half.
+
+### 4. Builder ownership (what a rerun does)
+`PierBuilder.build(Config)` is now a SYNC, not destroy-and-recreate:
+- **Builder-owned parts:** attribute `PierBuilt` and a stable name. A rerun finds each by name and only writes geometry (Size, CFrame, Shape) and structural flags (Anchored, CanCollide, CanQuery, CanTouch).
+- **Cosmetics:** colour, material, transparency, reflectance, CastShadow and anything you parent to a part (textures, decals, SurfaceAppearance) are set only when a part is first created.
+- **Glass panels (CSG unions):** kept while their geometry key is unchanged. If their shape must change they are rebuilt and inherit the old panel's look and children.
+- **Parts Config no longer produces:** moved (never destroyed) to `ServerStorage/NotPongCoast_Stale`, and reported.
+- **Instances without `PierBuilt`:** never touched, even inside the builder's folders. A non-builder part with a builder name is left alone; the builder uses a suffixed name.
+- **Beach:** the Baseplate gets its size / position each run; its look is set once.
+
+**Where changes belong:**
+- **Config (`Config.Pier`, `Config.Platform.Radius`):** ring widths, slope, thicknesses, segment counts, column rings, rail height / spacing, ramp, beach height, default colours of NEW parts, glass transparency default, `BallGround`. Then rerun the builder in Edit mode.
+- **Directly in Studio:** colours, materials, textures / decals / SurfaceAppearance on builder parts; any new detail assets. Detail assets go in their own folder (`Workspace.NotPongCoastDetail` is reserved) or anywhere outside the builder's band folders.
+- **Never by hand:** the size / position of builder parts (the next rerun restores them), the Platform (gameplay; `ArenaBuilder` validates it at Play).
+
+**Tested:**
+- Two consecutive reruns: 0 created, 0 updated, 2,782 kept, 64 glass panels kept, 0 stale.
+- Test edits (a promenade part recoloured and re-materialed, a glass panel's transparency changed plus a Texture child, an unmanaged prop inside `Promenade`) all survived a rerun, then were reverted.
+- Changing a band width (the turf ring 5.5 -> 2.5) updated 385 parts in place, creating none.
+- Found and fixed: DeepWater asked for 3000 studs; Roblox caps parts at 2048, so it re-registered as changed on every run.
+
+**Backups:**
+- `ServerStorage/NotPongBackup_2026-11-21_PreCoastPier` (the arena before the pier) is untouched.
+- The first blockout's 896 superseded parts are kept as `ServerStorage/NotPongCoast_Blockout1_Backup_2026-11-21`.
+- Superseded pieces created and replaced within this pass (the turf-fan experiments) were removed.
+
+### 5. Other checks
+**Scripted (Play):**
+- Walking: court -> glass -> borders / turquoise -> promenade, around the promenade, down the ramp onto the sand, along the beach, back up, and promenade -> glass (borders inward) -> court.
+- No snags; height changes per 0.1 s at most 0.17 on the bands, 0.93 on the 19-degree ramp. The floor reads Glass on the glass and Sand on the beach.
+- The railing stops you at r 97.5.
+- Camera / fade off the court and back. CourtShape, the Platform part and the serve check agree at r 55.9 (in) / 56.1 (out).
+- Console clean; ArenaBuilder validation clean; one Platform; Play / Stop leaves the Edit scene unchanged (rerun after Stop: 0 updated).
+
+**Rendered:** see `docs/arena-blockout/pass2/`:
+- turf / rim close-up before and after;
+- overhead;
+- gameplay camera;
+- borders close-up;
+- side half-section;
+- trim zoom (glass | grey | turquoise | grey | promenade, tops flush on one slope);
+- isometric.
+
+**Not verified:**
+- Real-mouse rallies and a real emergency save near the court edge (saves checked by simulation only).
+- The ball landing on the ramp (no ground for it: a ball over the ramp falls to the beach).
+- Frame rate with about 2,975 pier parts.
+- Avatars cannot walk under the pier: the air gap (about 12 studs) is lower than the 17.5-stud avatars. The beach under the deck is visual only.
+
+**Files**
+- `Shared/BallPhysics` (`Ground`, `groundAt`, ground contacts, pier edge, out event).
+- `Shared/TableWorld` (`world.ground`).
+- `Shared/CourtShape` (`pierRadii`, `deckHeightAt`).
+- `Shared/Config` (`Pier`: segments 128, borders, colours, turf ring, `RimLift` 0, column rings by band, `BallGround`).
+- `Server/PierBuilder` (sync rewrite).
+- `Server/ArenaBuilder` (a Disc Platform is created invisible).
+- Studio: `Workspace.NotPongCoast` rebuilt by the sync; `NotPongArena/Platform` Transparency 1.
+
+**Checklist**
+1. Is the turf edge clean all round (look along the rim from the serve camera and up close)?
+2. Do the grey / turquoise / grey bands read right, with the turquoise not too strong?
+3. Does a ball that goes long now land on the glass / promenade (or drop off past the railing) instead of floating?
+4. Recolour something in `NotPongCoast` and ask for a rebuild: does your change stay?
+
 ## Next
 
-**Your real-mouse comparison of the two rally input modes (Pass 8 checklist)**, and the Stage 1 playtest (rising returns + miss reasons), then Stage 2 (input / animation / contact sync) only after your feedback. Before it: your telemetry playtest (Pass 6d), then one controlled comparison at a time; afterwards (not yet) capped speed escalation in long rallies. Then the click-and-flick rally (Pass 6 checklist) with a real mouse — the flick thresholds (`Config.Flick`) and preparation ranges (`Config.Prep`) need tuning by feel — and a visual check once Studio renders again; then the open question on cross-court aim.
+**Your review of Pass 15, 14, 13, 12 and 11 (checklists above)**, including the rally-pace on / off comparison with a real mouse; then the stance curve bias (rest of Pass 3) and Pass 4 (incoming-spin response, disabled by default). Earlier: the real-mouse playtest of Pass 9. Older pending: the Stage 1 playtest (rising returns + miss reasons), then Stage 2 (input / animation / contact sync) only after your feedback. Before it: your telemetry playtest (Pass 6d), then one controlled comparison at a time; afterwards (not yet) capped speed escalation in long rallies. Then the click-and-flick rally (Pass 6 checklist) with a real mouse — the flick thresholds (`Config.Flick`) and preparation ranges (`Config.Prep`) need tuning by feel — and a visual check once Studio renders again; then the open question on cross-court aim.

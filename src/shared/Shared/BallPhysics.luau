@@ -70,16 +70,34 @@ export type Net = {
 -- The table body below the top (for side hits): an axis-aligned box.
 export type Box = { minX: number, maxX: number, minY: number, maxY: number, minZ: number, maxZ: number }
 
+-- (2026-11-21 coastal pier) The ball's GROUND as a simple analytic surface instead of the infinite floor plane: flat at
+-- floorY out to flatR (court + rim), then the deck rising `slope` per stud out to outerR (glass, trim, promenade), then
+-- the beach at beachY. The deck is a slab edgeDepth thick with open air below it: a ball below the slab (it can only get
+-- there from outside the pier) has the beach as its ground. Beyond the pier the rules' dead-ball moment is unchanged:
+-- crossing outY + radius emits a "floor" event (surface "out") without touching the ball, which keeps falling.
+export type Ground = {
+	cx: number,
+	cz: number,
+	floorY: number,
+	flatR: number,
+	slope: number,
+	outerR: number,
+	beachY: number,
+	edgeDepth: number,
+	outY: number,
+}
+
 export type World = {
 	surfaces: { Surface },
 	net: Net?,
 	tableBox: Box?,
 	floorY: number?,
+	ground: Ground?,
 }
 
 export type Event = {
 	kind: string, -- "table" | "net" | "netCord" | "side" | "floor"
-	surface: string?, -- table surface name for "table"
+	surface: string?, -- table surface name for "table"; for "floor" with a ground: "court" | "deck" | "beach" | "out"
 	position: Vector3,
 	velocity: Vector3, -- after the contact
 	time: number,
@@ -158,6 +176,28 @@ local function asWorld(world: any): World
 		return world
 	end
 	return { surfaces = world }
+end
+
+-- The ground under (x, z) for a ball at height refY: height, surface normal, region. A ball below the deck slab (refY
+-- under its underside) stands over the beach.
+function BallPhysics.groundAt(g: Ground, x: number, z: number, refY: number?): (number, Vector3, string)
+	local dx, dz = x - g.cx, z - g.cz
+	local r = math.sqrt(dx * dx + dz * dz)
+	if r <= g.outerR then
+		local y, n, region
+		if r <= g.flatR then
+			y, n, region = g.floorY, Vector3.yAxis, "court"
+		else
+			y = g.floorY + g.slope * (r - g.flatR)
+			local ux, uz = dx / r, dz / r
+			n = Vector3.new(-g.slope * ux, 1, -g.slope * uz).Unit
+			region = "deck"
+		end
+		if refY == nil or refY >= y - g.edgeDepth then
+			return y, n, region
+		end
+	end
+	return g.beachY, Vector3.yAxis, "beach"
 end
 
 local function over(s: Surface, p: Vector3): boolean
@@ -314,8 +354,39 @@ function BallPhysics.tick(state: State, config: Config, worldIn: any, events: { 
 		end
 	end
 
-	-- floor
-	if world.floorY then
+	-- ground (coastal pier) or the legacy floor plane
+	local ground = world.ground
+	if ground then
+		local gy, gn, region = BallPhysics.groundAt(ground, pos.X, pos.Z, prev.Y)
+		local rest = gy + r
+		if pos.Y < rest then
+			local py = BallPhysics.groundAt(ground, prev.X, prev.Z, prev.Y)
+			local pRest = py + r
+			if prev.Y >= pRest - 1e-6 and prev.Y >= rest - 0.25 then
+				-- landing from above (the court, the sloping deck or the beach)
+				local a, b = prev.Y - pRest, pos.Y - rest
+				local f = if a - b > 1e-9 then math.clamp(a / (a - b), 0, 1) else 0
+				if f < bestF then
+					bestF, bestKind, bestData = f, "floor", { n = gn, region = region }
+				end
+			elseif region ~= "beach" then
+				-- moving into the pier's edge from outside, below its top: a side hit (radially back out)
+				local dx, dz = pos.X - ground.cx, pos.Z - ground.cz
+				local m = math.max(math.sqrt(dx * dx + dz * dz), 1e-6)
+				if 0 < bestF then
+					bestF, bestKind, bestData = 0, "edge", Vector3.new(dx / m, 0, dz / m)
+				end
+			end
+		end
+		-- beyond the pier: the old floor plane's moment still ends the point (the ball itself is not touched)
+		local outRest = ground.outY + r
+		if bestKind == nil and v.Y < 0 and prev.Y >= outRest and pos.Y < outRest then
+			local dx, dz = pos.X - ground.cx, pos.Z - ground.cz
+			if dx * dx + dz * dz > ground.outerR * ground.outerR then
+				bestF, bestKind, bestData = (prev.Y - outRest) / (prev.Y - pos.Y), "floorOut", nil
+			end
+		end
+	elseif world.floorY then
 		local restY = world.floorY + r
 		if v.Y < 0 and prev.Y >= restY and pos.Y < restY then
 			local f = (prev.Y - restY) / (prev.Y - pos.Y)
@@ -331,11 +402,21 @@ function BallPhysics.tick(state: State, config: Config, worldIn: any, events: { 
 		local c = prev:Lerp(pos, bestF)
 		if bestKind == "table" or bestKind == "floor" then
 			local s = if bestKind == "table" then bestData :: Surface else nil
-			local restY = if s then s.topY + r else (world.floorY :: number) + r
+			local n = Vector3.yAxis
+			local restY
+			if s then
+				restY = s.topY + r
+			elseif ground then
+				local gy, gn, region = BallPhysics.groundAt(ground, c.X, c.Z, prev.Y)
+				restY, n = gy + r, gn
+				surfaceName = region
+			else
+				restY = (world.floorY :: number) + r
+			end
 			local e = if s then config.restitution else (config.floorRestitution or 0.5)
 			local mu = if s then (config.tableFriction or 0) else (config.floorFriction or 0.5)
 			local legacyFriction = s and config.tableFriction == nil and config.friction
-			v, w = BallPhysics.contact(v, w, Vector3.yAxis, e, mu, config.spinRadius or r, nil, if s then config.bounceSpinKick else nil)
+			v, w = BallPhysics.contact(v, w, n, e, mu, config.spinRadius or r, nil, if s then config.bounceSpinKick else nil)
 			if legacyFriction then
 				v = Vector3.new(v.X * legacyFriction, v.Y, v.Z * legacyFriction)
 			end
@@ -366,6 +447,19 @@ function BallPhysics.tick(state: State, config: Config, worldIn: any, events: { 
 			local keep = config.netCordKeep or 0.7
 			v = Vector3.new(v.X * keep, math.abs(v.Y) * 0.5 + math.abs(v.Z) * 0.15, v.Z * keep)
 			pos = c + v * dt * (1 - bestF)
+		elseif bestKind == "floorOut" then
+			-- the dead-ball moment beyond the pier (reported as a floor contact); the ball keeps its flight
+			bestKind = "floor"
+			surfaceName = "out"
+			pos = prev:Lerp(pos, 1)
+		elseif bestKind == "edge" then
+			local u = bestData :: Vector3
+			local vn = v:Dot(u)
+			if vn < 0 then
+				v -= u * ((1 + (config.sideRestitution or 0.4)) * vn)
+			end
+			bestKind = "side"
+			pos = prev
 		elseif bestKind == "side" then
 			local e = config.sideRestitution or 0.4
 			if bestData == "x" then

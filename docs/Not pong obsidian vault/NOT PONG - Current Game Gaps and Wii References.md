@@ -185,6 +185,164 @@ Research sources: [[Wii Sports Resort - Table Tennis Research]].
 - Stroke selection stays on the mouse for this experiment (no Q/E forehand/backhand keys).
 - Serves, the Q serving posture, the emergency save and its get-up, movement, camera, bot, scoring, ball speed, reach, contact timing, power/spin mapping and shot physics stay the same, so the two modes can be compared fairly.
 
+## Confirmed decisions — November 18, 2026 (Q selection, click commitment, body-centred reach)
+
+- The button-free rally input is superseded: rallies use hold-left-click to commit and a flick while holding to swing; only one rally input system exists.
+- Q toggles forehand/backhand during rallies; the cursor no longer selects the stroke. Q keeps switching the serving posture during the player's own serve.
+- The cursor prepares base aim, height (drive versus arc) and the paddle; either stroke can aim across the whole opponent's half.
+- While committed, Q queues the next stroke without changing the current commitment; holding never adds power; release never swings; one attempt per press.
+- Normal contact uses one larger symmetric zone centred on the torso for both strokes, with limited coverage behind; the emergency zone stays separate and larger, with its lob and 0.5-second get-up at 80% speed. Being inside a zone never hits by itself.
+
+## Confirmed decisions — November 18, 2026 (readability, impact and rally variety plan)
+
+- The current feel is the baseline; improvements come in separate, reversible passes: feedback first, then animation, then balance experiments, each balance experiment tested alone.
+- Shot feedback: the predicted path draws progressively after the flick and fades; the curve meter is replaced by a trace of the actual mouse gesture; an attackable high ball gets a subtle orange wavy trail based on a shared smash-opportunity classification.
+- Planned (not yet built): a distinct scoop for emergency saves, stroke intensity that follows the actual shot, a visual-only smash hop, a stance-dependent curve bias, a capped rally speed escalation (off by default) and a gentle incoming-spin response (off by default).
+
+## Confirmed decisions — November 19, 2026 (smash hop, spin dial, trace size)
+
+- The old circular TOP / LEFT / RIGHT / BACK spin dial is removed; the cursor flick trace replaces spin-gesture feedback, and the contact-timing circle around the incoming ball stays.
+- The cursor trace is about 24% larger, configurable, with no change to mouse sensitivity, thresholds, power or spin.
+- The smash hop is a visual-only dip, rise past contact and landing for real smash attempts; it never changes physics, reach, timing, movement or the root position.
+
+## Confirmed decisions — November 21, 2026 (coastal pier cleanup)
+
+- Court size, glass readability, the gentle rise and air gap, walking / camera transitions, the ramp position and the column count are approved for now.
+- The outer sequence is: glass, dark grey border, turquoise band (about 1.8 studs), dark grey border, warm promenade. The borders are dark grey, not black; the turquoise does not glow.
+- The ball's ground follows the visible pier: the court, the sloping deck, the beach below. A point still ends at the first ground contact; beyond the pier it ends where the old floor would have been.
+- The pier builder owns only the structure's shape; colours, materials, textures and detail assets added in Studio are kept across rebuilds.
+
+## Measured game facts (Studio, 2026-11-21, coastal pier cleanup)
+
+- Roblox draws a large Cylinder part as a coarse polygon although its collision is a true circle; beside a finer polygonal rim this left dark slivers.
+- On the turf, a fan of many thin wedges or CSG unions rendered faint dark specks from the gameplay camera; one plain part rendered none.
+- With the pier ground, the dead-ball moment of 391 of 393 simulated returns is identical to the old flat floor; the other 2 end 0.004 s sooner.
+- Roblox caps a part's size at 2048 studs per axis.
+- The air gap under the glass (about 12 studs) is lower than the avatars (17.5 studs), so the beach under the deck cannot be walked.
+
+## Confirmed decisions — November 21, 2026 (coastal pier arena)
+
+- The arena is a raised coastal pier. From the centre: flat circular turf court, narrow white rim, broad walkable transparent glass, narrow turquoise trim, warm orange-brown promenade, outer railing. The bands adjoin directly; there are no bridges, no sand or planting ring at deck height and no opaque blue walkway.
+- The court is flat. The glass, trim and promenade rise gently outward together as one shallow cone.
+- There is open air under the glass down to a lower beach.
+- The court keeps the existing table, ball, paddle and floor height; it is sized for the measured play space, not the diagram.
+- Building is staged: structural blockout first, reviewed, then scenery, seating, spectators and lighting.
+
+## Measured game facts (Studio, 2026-11-21, coastal pier blockout)
+
+- In 400 simulated returns the ball falls to 8 studs above the floor at a median 37 and p98 48 studs from the table centre, and to 3 studs at p98 54. The court radius is 56.
+- The blockout rise is 0.06 studs per stud: 2.5 studs from the rim to the promenade edge, about 2 studs felt by a walking avatar. The beach is about 12 studs below the glass.
+- Walking from the court over the glass to the promenade and back takes 3.2 s each way at full walk speed with no snagging; the floor reads as Glass.
+
+## Confirmed decisions — November 21, 2026 (trail taper, colour by returns, single jump)
+
+- The ball trail is widest right behind the ball and narrows and fades toward its oldest end.
+- The trail colour follows the number of accepted rally returns, not the speed percentage: 0-9 white, 10-19 yellow, 20-29 red, 30+ purple (interval 10, configurable). The count restarts at every serve.
+- The colour switches at once at each boundary. The orange vulnerable-ball cue overrides it temporarily and the stage colour returns afterwards.
+- One jump per grounded cycle: landing and a fresh Space press are required for the next jump.
+
+## Measured game facts (Studio, 2026-11-21, taper / returns / jump)
+
+- A Trail's width and transparency keys start at the newest point (at the ball).
+- On the scaled avatar the Humanoid reports a floor and "Landed" at any height within about 16 studs of the ground, so a held Space re-launched mid-jump. A raycast gives the real ground distance.
+- The server's hit counter counts the serve as hit 1; returns = hits - 1.
+
+## Confirmed decisions — November 20, 2026 (comet ball trail)
+
+- The ball trail is built from the user's SyphoDev Trails reference sheets, as layered comet textures: body, white-hot core, strands, sparkle dust, smoky wisps.
+- Detail grows with the rally stage: the opening has the body, core and strands; yellow adds dust; red adds wisps; purple is everything at full.
+- The red rally stage is a deeper crimson, so it stays visible over the orange table.
+- A tossed ball has no comet trail; only a struck ball does.
+
+## Measured game facts (Studio, 2026-11-20, comet ball trail)
+
+- Roblox Trails draw the texture's top row at the moving part, with its height along the trail and its width across it.
+- The comet reference JPGs have a fake transparency checkerboard baked in, and the comets were layered over it in different ways.
+- Additive glow over the orange table turns purple into pink and makes the old red (255, 80, 70) almost vanish.
+
+## Confirmed decisions — November 19, 2026 (visual pass V3 fixes)
+
+- The serve prediction (dashed line, ring, arrow) disappears when the serve is struck. The ball itself always stays visible.
+- The serve's dashed line lies flat on the table and is thin.
+- The landing ring and filling arrow are shown before the strike. Before the flick they show a typical serve, since power and spin are unknown.
+- After a match the ball returns to the player's free hand. A new match starts only when the player asks for it on the platform.
+- The upcoming-shot preview is blue, so it never shares a colour with the ball's trail stages or the orange vulnerable-ball cue. The old spin tint on trails is removed.
+- Speed strands come from the user's Trails reference sheet and are present from the opening rally, growing with the pace.
+
+## Measured game facts (Studio, 2026-11-19, visual pass V3 fixes)
+
+- From the gameplay camera most flights are seen nearly end-on. A 1-stud trail tapering to 15% read as no trail at all; a ball-wide trail is visible.
+- The serve camera sits about 33 studs behind the player and about 7 above the table. The receiver's half appears as a thin band behind the net, so landing markers there are small.
+
+## Confirmed decisions — November 19, 2026 (visual pass V3)
+
+- Serving is legal anywhere on the platform behind the server's own end line, including beyond the side lines.
+- The serve landing cue:
+  - before the flick, only a faint aim cue is shown;
+  - after it, a white dashed predicted path ends at the receiver-side landing (the serve's second bounce);
+  - the landing has a hollow white ring and a short downward arrow that fills from tail to tip.
+- The tossed serve ball gets the same contact ring as rally balls, green while a serve strike is legal. There is no serving slow motion.
+- Orange marks a vulnerable / high defensive ball:
+  - emergency saves, pop-ups and clearly high returns;
+  - the same for both competitors;
+  - it temporarily overrides the rally colours.
+- Rally trail colours follow the rally pace stage: white, yellow, red, then purple at the cap, reset every point. Subtle speed streaks grow with the pace.
+- Player-facing reach and serve-region debug shapes are hidden; they remain developer options.
+- The ball logo is 70% of its previous size.
+- The ordinary jump is a normal, lower jump.
+- The rally speed cap is 20%.
+
+## Measured game facts (Studio, 2026-11-19, visual pass V3)
+
+- The old orange filter missed emergency saves. Saves bounce up about 9 above the table with smash windows of about 0.3 s, below its 0.4 s / 9.5 thresholds.
+- Shot heights above the table:
+  - ordinary drives fly about 12-15 and bounce up 7.6-9.7;
+  - saves fly about 17;
+  - high returns fly 17-30.
+- By the smash height rule alone, most bouncing drives are technically smashable.
+- From the widest serving spots close to the end line, only a narrow band of serves is legal and safe. A launch scan finds one in about 25-30 ms.
+- At the 20% pace cap:
+  - bot returns reached the player about 0.26 s sooner (1.04 to 0.78 s);
+  - the usable contact window shrank about 23% (0.43 to 0.33 s), double the 10% cap's loss.
+- The default jump on the scaled avatar rose about 21.5 studs for about 0.94 s.
+- The Humanoid's jump state holds the take-off speed for about 0.12 s.
+
+## Confirmed decisions — November 19, 2026 (stroke impact, VFX, rally pace)
+
+- Strokes are distinct and scale with the shot's actual power:
+  - soft returns are compact;
+  - forehands finish across to the opposite shoulder with a torso turn;
+  - backhands are compact and outward;
+  - emergency saves are a scoop under the ball;
+  - smashes have a high windup, a high contact and a low finish toward the opposite hip, never stopping overhead.
+- Shot VFX come from the SyphoDev texture pack:
+  - small accents for ordinary returns, stronger ones for strong returns;
+  - a controlled burst and a downward trail for smashes;
+  - a soft ring for scoops;
+  - no camera shake, flash or hit-stop.
+- A rally-pace experiment exists but stays off until compared. Returns 1-4 stay at baseline, then each return adds 2% up to +10%. It resets every point and applies to ordinary shots only.
+
+## Measured game facts (Studio, 2026-11-19)
+
+- The previous smash looked like a high five because every stroke shared one follow-through offset that lifts the arm up and across.
+- At the +10% pace cap, with reach and timing settings unchanged:
+  - bot returns reached the player about 0.15 s sooner (about 1.07 s → 0.92 s);
+  - the usable contact window shrank about 12% (about 0.49 s → 0.44 s);
+  - with perfect scripted input, the bot still returned every ball;
+  - predicted landings matched the server within 0.05 studs.
+
+## Measured game facts (Studio, 2026-11-18)
+
+- The leg flexion needed to lower the body 1.6 studs on this avatar had to be about 84% of the geometric value because the ready stance is already bent (full value left the feet 0.45 studs off the floor).
+- A smash contact on this rig leaves roughly 0.05 s between the flick's recognised onset and the contact, so a visible dip has to fit inside that and the rise peaks just after the contact.
+
+- Under the smash rule's geometry (ball centre at least 7.5 studs above the table, not far behind the end line) many ordinary bot returns are briefly smash-legal at their apex (apex 7.6-10.5 studs, smash-legal for 0.07-0.37 s); the bot's pop-up reached 10.9 studs for 0.51 s and soft high player lobs 9.7-12.1 studs for 0.41-0.50 s.
+- The progressive path reveal finished 0.22 s after the flick for a ball flying about 0.8 s, staying ahead of the ball; the predicted landing matched the real first bounce within about 0.1 stud on clean hits, while a weak hit's client prediction differed by 2.6 studs until replaced by the server's own launch.
+
+- The flick felt late because the swing was finalised only when the hand slowed down or 0.06 s after the onset (0.067 s after the hand started, up to 0.100 s), the paddle stroke started only then and always took its 0.06 s minimum, reaching the ball about 0.058 s after the judged contact, and the ball's new direction appeared only after the server round trip (about 0.30 s after the hand started with about 100 ms of simulated lag).
+- Starting the stroke at the onset (about 0.033 s after the hand starts, at 60 fps) lets the paddle reach the ball exactly at the judged contact (0.070 s); a fixed 0.04 s measurement finalises the flick by 0.050 s at 60 fps and above with the same spin direction and similar power (mean difference about 0.02).
+- The previous right-offset reach covered 5.5 studs to the left but 13.5 to the right for a forehand (mirrored for a backhand); the new symmetric zone covers 13.5 studs to either side, 13 ahead and 3.5 behind. A right-handed forehand arm stays about 3.8 studs short of a ball 11 studs to the left (about 1 stud on the forehand side).
+
 ## Measured game facts (Studio, 2026-11-17)
 
 - With free cursor movement, a quick small sideways move (about 80-200 reference px in 50-100 ms) and a sideways flick produce the same movement shape; in synthetic tests so did 150-300 px moves in about 120 ms. Longer moves (500 px or more, or 250 ms or longer) were distinguishable: they keep moving after a flick-length measurement ends.

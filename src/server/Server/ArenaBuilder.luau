@@ -85,6 +85,16 @@ local function part(parent: Instance, name: string): (Part, boolean)
 	return p :: Part, created
 end
 
+-- (2026-11-21 coastal pier) The platform's geometry by Config.Platform.Shape: "Disc" = a Cylinder part with its axis
+-- vertical (Size = Thickness x 2R x 2R, rotated 90 degrees about Z); "Rect" = the old box slab.
+function ArenaBuilder.platformGeometry(): (Vector3, CFrame, Enum.PartType)
+	local P, L = Config.Platform, Config.Layout
+	if P.Shape == "Disc" then
+		return Vector3.new(P.Thickness, 2 * P.Radius, 2 * P.Radius), CFrame.new(L.PlatformCenter) * CFrame.Angles(0, 0, math.pi / 2), Enum.PartType.Cylinder
+	end
+	return P.Size, CFrame.new(L.PlatformCenter), Enum.PartType.Block
+end
+
 -- STATIC GEOMETRY ---------------------------------------------------------------------------------------
 
 -- The uploaded table model (Table/Visual/TableAsset), or nil when the arena still uses the primitive placeholder visuals.
@@ -220,9 +230,13 @@ function ArenaBuilder.syncGeometry(existing: Folder?, gameplayOnly: boolean?): F
 
 	-- PLATFORM -------------------------------------------------------------------------------------
 	local platform, platformNew = part(arena, Config.Names.PlatformPart)
-	setGeometry(platform, P.Size, CFrame.new(L.PlatformCenter), true, "Default")
+	local pSize, pCFrame, pShape = ArenaBuilder.platformGeometry()
+	platform.Shape = pShape
+	setGeometry(platform, pSize, pCFrame, true, "Default")
 	platform.CanQuery = true
-	cosmetic(platform, platformNew, { Color = P.Color, Material = P.Material })
+	-- (2026-11-21b) a Disc court is COLLISION ONLY (invisible): the visible turf is PierBuilder's 128-segment fan on the same
+	-- circle, so the turf meets the rim exactly (a Cylinder part renders as a coarse polygon, which left dark slivers).
+	cosmetic(platform, platformNew, { Color = P.Color, Material = P.Material, Transparency = if P.Shape == "Disc" then 1 else 0, CastShadow = P.Shape ~= "Disc" })
 
 	-- BALL TEMPLATE (visible in Edit mode) ------------------------------------------------------------
 	-- `Ball` is the canonical gameplay part (invisible); `Ball/BallVisual` is the cosmetic shell. Sizes are enforced,
@@ -443,7 +457,14 @@ function ArenaBuilder.validate(arena: Folder): { string }
 	end
 	expect("Table/Collision/TableTop", Vector3.new(T.Width, T.Height, T.Length), Vector3.new(Config.Arena.Origin.X, L.FloorY + T.Height / 2, Config.Arena.Origin.Z))
 	expect("Net/NetMesh", Vector3.new(N.Length, N.Height, N.Thickness), L.NetCenter)
-	expect(Config.Names.PlatformPart, Config.Platform.Size, L.PlatformCenter)
+	do
+		local pSize, _, pShape = ArenaBuilder.platformGeometry()
+		expect(Config.Names.PlatformPart, pSize, L.PlatformCenter)
+		local pl = arena:FindFirstChild(Config.Names.PlatformPart)
+		if pl and pl:IsA("Part") and pl.Shape ~= pShape then
+			table.insert(problems, ("%s shape %s, expected %s"):format(Config.Names.PlatformPart, tostring(pl.Shape), tostring(pShape)))
+		end
+	end
 	for _, name in { Config.Names.PlayerSpawn, Config.Names.BotSpawn } do
 		expect(name, nil, nil)
 	end

@@ -91,8 +91,8 @@ function ContactRing.new(screen: ScreenGui, controller: any)
 	end
 
 	controller.on(function(event: string, data: any)
-		if event == "swing" and not data.serve then
-			startFade() -- the opportunity was used: leave the ring as it is and fade (never unwind)
+		if event == "swing" then
+			startFade() -- the opportunity was used (a return or the serve strike): leave the ring as it is and fade (never unwind)
 		elseif event == "result" then
 			startFade()
 		elseif event == "reset" and data and (data.why == "point reset" or data.why == "respawned") then
@@ -138,13 +138,25 @@ function ContactRing.new(screen: ScreenGui, controller: any)
 			and PlatformZone.isOn()
 			and info.hits ~= controller.swungHits
 			and (controller.state == "IDLE" or controller.state == "COMMITTED")
+		-- SERVE TOSS (Pass 12): your own toss in the air, not yet struck. The ring uses the toss's real contact phase
+		-- (ServeRules.phase from the server's toss snapshot and your stroke's reach, the same rule the server judges the
+		-- serve flick with: legal when the flick STARTS inside [enter, exit]). No rally bounce rules, no slow motion.
+		local sw = controller.window
+		local serveMode = BallView.getState() ~= nil
+			and info.mode == "free"
+			and info.serve == true
+			and controller.swungHits ~= -100
+			and PlatformZone.isOn()
+			and (controller.state == "IDLE" or controller.state == "COMMITTED")
+		local key = if serveMode then -7 else info.hits
+		incoming = incoming or serveMode
 
-		-- a different incoming ball: start over
-		if incoming and info.hits ~= hitsKey then
+		-- a different incoming ball (or a new toss): start over
+		if incoming and (key ~= hitsKey or phase == "off") then
 			if phase ~= "off" then
 				clear()
 			end
-			hitsKey = info.hits
+			hitsKey = key
 			phase, display, fade, wasGreen = "live", 0, 1, false
 		end
 		if phase == "live" and not incoming then
@@ -171,7 +183,21 @@ function ContactRing.new(screen: ScreenGui, controller: any)
 		local eligible, target = false, display
 		local kind = "none"
 		local toValid = 0
-		if phase == "live" then
+		if phase == "live" and serveMode then
+			kind = "serve"
+			if sw and sw.cleanStart then
+				-- release (flick start) times in server time: legal for a flick starting in [enter, exit]
+				eligible = serverNow >= sw.enter and serverNow <= sw.exit
+				toValid = sw.enter - serverNow
+				if eligible then
+					target = 1
+				elseif serverNow > sw.exit then
+					startFade() -- the toss dropped past the contact phase
+				else
+					target = math.min(1 - math.clamp(toValid / R.LeadTime, 0, 1), R.BeforeValidMax)
+				end
+			end
+		elseif phase == "live" then
 			local w = controller.window
 			local win = w or controller.outerWindow
 			if win and not win.cleanStart then
@@ -202,10 +228,16 @@ function ContactRing.new(screen: ScreenGui, controller: any)
 				end
 			else
 				-- no reachable window (yet / any more): approach by distance to the contact area, never complete, never green
-				local a, reach = controller.anchor(), S.PaddleReach
-				if a then
-					local d = Vector2.new(pos.X - a.X, pos.Z - a.Z).Magnitude
-					target = math.clamp(1 - (d - reach) / R.ApproachStuds, 0, R.UnreachableMax)
+				-- (studs outside the normal reach, in either contact model)
+				local r = controller.reach and controller.reach(false)
+				local outside: number? = nil
+				if typeof(r) == "table" then
+					outside = (ShotInput.zoneRadius(r, pos) - 1) * math.min(r.side, r.front)
+				elseif typeof(r) == "Vector3" then
+					outside = Vector2.new(pos.X - r.X, pos.Z - r.Z).Magnitude - S.PaddleReach
+				end
+				if outside then
+					target = math.clamp(1 - outside / R.ApproachStuds, 0, R.UnreachableMax)
 				end
 			end
 		end

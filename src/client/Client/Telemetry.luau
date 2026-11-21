@@ -156,15 +156,8 @@ function Telemetry.start(player: Player, controller: any)
 		local b = ball
 		if event == "stroke" and b and not data.locked then
 			b.strokeChanges += 1
-		elseif event == "candidate" then
-			-- (mouse-only) a fast movement the classifier / attempt zone treated as preparation
-			local why = tostring(data and data.outcome)
-			local key = if string.find(why, "sweep") then "ignoredSweep" elseif string.find(why, "zone") then "ignoredOutsideZone" else "ignoredOther"
-			bump(key)
-			local fl = data and data.flick
-			out(("IGNORED (%s)%s | in zone now %s"):format(why,
-				if fl then (" flick %s px/s %s px dir (%s,%s) closed by %s"):format(fmt(fl.speed, 0), fmt(fl.distance, 0), fmt(fl.dirX), fmt(fl.dirY), tostring(fl.closedBy)) else "",
-				tostring(controller.inZone)))
+		elseif event == "strokeSelect" then
+			bump(if data.queued then "qQueued" else "qSelect")
 		elseif event == "commit" then
 			if data.serve then
 				return
@@ -282,6 +275,21 @@ function Telemetry.start(player: Player, controller: any)
 				fmt(m.window and m.window.enter, 3), fmt(m.window and m.window.ideal, 3), fmt(m.window and m.window.exit, 3),
 				fmt(m.risingGap, 3), if m.risingBlocked then " (ball was in reach but still RISING)" elseif m.risingHit then " (hit while RISING: the old rule would have refused it)" else "",
 				tostring(m.land), fmt(m.landDepth, 1), fmt(m.landLateral, 1)))
+			-- TIMING (2026-11-18): every stage relative to the hand starting the flick (s): first deliberate movement after the
+			-- press, onset recognised, finalised (request sent), first stroke frame, paddle at contact, the judged contact
+			-- moment, the server's reply, and when the ball's new flight became visible (predicted locally / server).
+			local tr = controller.trace
+			if tr and tr.start then task.delay(0.3, function() -- (the server's snapshot may land just after its reply)
+				local a = controller.lastArmSolve or {}
+				local hit = BallView.hitDebug()
+				local function rel(x: any): string
+					return if typeof(x) == "number" then fmt(x - tr.start, 3) else "-"
+				end
+				out(("TIMING first move %s | onset %s | finalised %s | stroke starts %s%s | paddle at contact %s | judged contact %s | server reply %s | ball response %s (predicted) / %s (server)%s"):format(
+					rel(tr.firstMove), rel(tr.onset), rel(tr.final), rel(a.startedAt), if a.fromOnset then " (at onset)" else "",
+					rel(a.contactAt), rel(tr.contactClock), rel(tr.reply), rel(hit.predictedAt), rel(hit.serverAt),
+					if hit.cancelledAt then " cancelled " .. rel(hit.cancelledAt) else ""))
+			end) end
 			if attempts % T.SummaryEvery == 0 then
 				printSummary()
 			end

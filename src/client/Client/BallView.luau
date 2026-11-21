@@ -36,8 +36,14 @@ local info = {
 	freeze = nil :: any,
 	pressAck = 0,
 	serve = false, -- the local player's serve toss is in the air and may be struck
+	highBall = nil :: any, -- { a, z (server time), r (receiver) }: the server classified this hit as an attackable high ball
 }
 local localTimeScale: number? = nil -- predicted slow motion (until the server answers)
+-- PREDICTED BALL RESPONSE (2026-11-18, Config.ShotControl.PredictBallResponse): the local player's accepted-looking
+-- swing shows the ball's new flight at the contact moment instead of a server round trip later. Cosmetic only: the
+-- server's next snapshot (its own judgement and launch) replaces it; a missed / refused swing cancels it.
+local pendingHit: any = nil -- { t (server time), p, v, w, hits, applied (os.clock) }
+local hitMarks = { predictedAt = nil :: number?, serverAt = nil :: number?, cancelledAt = nil :: number? }
 
 -- The locally simulated ball (read-only for other client modules) and the latest server flags.
 function BallView.getState(): BallPhysics.State?
@@ -56,6 +62,27 @@ end
 -- Predicted charge slow motion: apply the configured scale until the server confirms or denies it.
 function BallView.setLocalTimeScale(scale: number?)
 	localTimeScale = scale
+end
+-- The local player swung and the client predicts a hit: from server time `t`, show the ball leaving `p` with velocity `v`
+-- and spin `w` (unless the server's own hit arrives first). `hits` = the hit counter at the swing.
+function BallView.predictHit(t: number, p: Vector3, v: Vector3, w: Vector3, hits: number)
+	pendingHit = { t = t, p = p, v = v, w = w, hits = hits, applied = nil }
+	hitMarks.predictedAt, hitMarks.serverAt, hitMarks.cancelledAt = nil, nil, nil
+end
+-- (diagnostics) a new swing: clear the previous hit's visibility marks (also when no prediction is made)
+function BallView.noteSwing()
+	hitMarks.predictedAt, hitMarks.serverAt, hitMarks.cancelledAt = nil, nil, nil
+end
+local cancelHook: (() -> ())? = nil
+function BallView.cancelPrediction()
+	if pendingHit and cancelHook then
+		cancelHook()
+	end
+	pendingHit = nil
+end
+-- (diagnostics) when the hit became visible: predicted locally / by the server's snapshot (os.clock)
+function BallView.hitDebug()
+	return table.clone(hitMarks)
 end
 function BallView.isHeld(): boolean
 	return info.mode == "held" or info.mode == "hand" or (localTimeScale ~= nil and localTimeScale <= 0)
@@ -90,23 +117,52 @@ function BallView.start()
 		return character and character:FindFirstChild("LeftHand") :: BasePart? or nil
 	end
 
+	local function catchUp(s: BallPhysics.State, fromT: number, scale: number)
+		local lag = math.clamp(workspace:GetServerTimeNow() - fromT, 0, MAX_CATCHUP)
+		while lag > 0 do -- step() caps work per call; loop to cover the whole latency
+			local chunk = math.min(lag, cfg.fixedStep * cfg.maxStepsPerUpdate * 0.9)
+			BallPhysics.step(s, cfg, world, chunk * scale)
+			lag -= chunk
+		end
+	end
+	cancelHook = function()
+		-- a shown prediction the server did not confirm: back to the last real state, caught up to now
+		local ph = pendingHit
+		if ph and ph.applied and lastSnapshot then
+			local s = BallPhysics.copyState(lastSnapshot.state)
+			s.resting = false
+			catchUp(s, lastSnapshot.t, 1)
+			state = s
+			current = s
+			hitMarks.cancelledAt = os.clock()
+		end
+	end
+
 	snapshotRemote.OnClientEvent:Connect(function(snap)
 		local s = BallPhysics.newState(snap.p, snap.v, snap.w)
 		s.resting = snap.mode == "held" or snap.mode == "hand"
 		lastSnapshot = { state = BallPhysics.copyState(s), t = snap.t, b = snap.b or 0 }
-		local lag = math.clamp(workspace:GetServerTimeNow() - snap.t, 0, MAX_CATCHUP)
-		local lagScale = if snap.mode == "slow" then (snap.ts or 1) else 1
-		while lag > 0 do -- step() caps work per call; loop to cover the whole latency
-			local chunk = math.min(lag, cfg.fixedStep * cfg.maxStepsPerUpdate * 0.9)
-			BallPhysics.step(s, cfg, world, chunk * lagScale)
-			lag -= chunk
+		local ph = pendingHit
+		local newHit = (snap.h or 0) ~= info.hits and snap.mode == "free"
+		if newHit and not hitMarks.serverAt then
+			hitMarks.serverAt = os.clock()
 		end
-		state = s
-		current = s
+		if ph and ((snap.h or 0) ~= ph.hits or snap.mode ~= "free") then
+			pendingHit = nil -- the server's own hit (or the point ended): it takes over
+			ph = nil
+		end
+		local keepPrediction = ph ~= nil and ph.applied ~= nil -- (a periodic snapshot of the old flight must not undo a shown prediction)
+		local lagScale = if snap.mode == "slow" then (snap.ts or 1) else 1
+		catchUp(s, snap.t, lagScale)
+		if not keepPrediction then
+			state = s
+			current = s
+		end
 		info.incoming, info.bounces, info.hits, info.mode = snap.i == true, snap.b or 0, snap.h or 0, snap.mode
 		info.timeScale = snap.ts or 1
 		info.freeze, info.pressAck = snap.f, snap.pa or 0
 		info.serve = snap.sv == true
+		info.highBall = if typeof(snap.hb) == "table" then snap.hb else nil -- (server) attackable-high-ball window for this hit
 		info.received = os.clock()
 	end)
 	snapshotRemote:FireServer() -- ask for the current state
@@ -139,6 +195,19 @@ function BallView.start()
 				end
 				return
 			end
+		end
+		-- predicted hit: at its contact moment the ball leaves along the predicted launch
+		local ph = pendingHit
+		if ph and not ph.applied and info.mode == "free" and info.hits == ph.hits and workspace:GetServerTimeNow() >= ph.t then
+			local ns = BallPhysics.newState(ph.p, ph.v, ph.w)
+			catchUp(ns, ph.t, 1)
+			s = ns
+			state = ns
+			current = ns
+			ph.applied = os.clock()
+			hitMarks.predictedAt = ph.applied
+		elseif ph and ph.applied and os.clock() - ph.applied > 1.5 then
+			pendingHit = nil -- never confirmed nor cancelled (lost reply): let the next snapshot rule
 		end
 		local timeScale = localTimeScale or info.timeScale
 		local simDt = if info.mode == "held" or info.mode == "hand" then 0 else dt * timeScale

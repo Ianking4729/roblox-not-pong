@@ -52,6 +52,33 @@ local function lerp(a: number, b: number, t: number): number
 end
 
 -- Horizontal launch speed for a power.
+-- RALLY PACE (Config.RallyPace, disabled by default): the speed multiplier for return number `returnIndex` of the point
+-- (1 = the first return after the serve). `baseSpeed` (optional) applies the overall cap: the escalated speed never exceeds
+-- MaxSpeed (a shot already faster than that is left at its baseline). Returns 1 when disabled.
+-- (Pass 12) The rally's escalation STAGE as a percent (0 .. MaxPercent) for return number `returnIndex`, from the same
+-- schedule as rallyPaceFactor but without any per-shot speed cap: the source of the trail's rally colours. 0 when the
+-- pace experiment is off.
+function ShotLaunch.rallyPacePercent(returnIndex: number): number
+	local R = Config.RallyPace
+	if not R or not R.Enabled or returnIndex ~= returnIndex then
+		return 0
+	end
+	return math.clamp((returnIndex - R.FreeReturns) * R.StepPercent, 0, R.MaxPercent)
+end
+
+function ShotLaunch.rallyPaceFactor(returnIndex: number, baseSpeed: number?): number
+	local R = Config.RallyPace
+	if not R or not R.Enabled or returnIndex ~= returnIndex then
+		return 1
+	end
+	local extra = math.clamp((returnIndex - R.FreeReturns) * R.StepPercent, 0, R.MaxPercent) / 100
+	local f = 1 + extra
+	if baseSpeed and baseSpeed > 0 and R.MaxSpeed then
+		f = math.max(1, math.min(f, R.MaxSpeed / baseSpeed))
+	end
+	return f
+end
+
 function ShotLaunch.speedFor(power: number): number
 	local S = Config.ShotControl
 	return lerp(S.MinShotSpeed, S.MaxShotSpeed, math.clamp(power, 0, 1))
@@ -381,7 +408,10 @@ function ShotLaunch.serve(contact: Vector3, power: number, topspin: number, side
 	local maxTargetX = math.max(TableWorld.halfWidth - S.LateralMargin, 0)
 	local cx = TableWorld.center.X
 	local solveOpts = S.SolveCost
-	local deadline = t0 + S.SolveBudget
+	-- (Pass 12) contacts outside the table's width (the wider serving area) get WideSolveBudgetExtra more: measured, some
+	-- strong-sidespin serves from the widest corners ran out of the normal budget although a legal choice existed
+	local wide = math.abs(contact.X - TableWorld.center.X) > TableWorld.halfWidth
+	local deadline = t0 + S.SolveBudget + (if wide then (S.WideSolveBudgetExtra or 0) else 0)
 
 	local function finish(out: ServeLaunch): ServeLaunch
 		local ms = (os.clock() - t0) * 1000
@@ -546,19 +576,68 @@ function ShotLaunch.serve(contact: Vector3, power: number, topspin: number, side
 			break
 		end
 	end
-	-- 3: the aim eased toward the centre, no sidespin
+	-- 3: the aim eased toward the centre, no sidespin (the topspin / backspin kept); then (Pass 12, wide serving spots)
+	-- half the topspin / backspin at the centre-most aims, before the spin-free centre serve gives up the spin entirely
 	if os.clock() <= deadline then
-		for _, aimScale in { 0.6, 0.25 } do
-			local target = ServeRules.target(aim * aimScale, power, base)
-			local shot, first, env = attempt(target, topspin, 0)
+		local tries = { { 0.6, 1 }, { 0.25, 1 }, { 0, 1 }, { 0.25, 0.5 }, { 0, 0.5 } }
+		for _, tr in tries do
+			if tr[2] < 1 and topspin == 0 then
+				break
+			end
+			local target = ServeRules.target(aim * tr[1], power, base)
+			local shot, first, env = attempt(target, topspin * tr[2], 0)
 			if shot and env and env.ok then
-				local out = launch(shot.velocity, shot.spin, "legal serve (aim eased, no sidespin)", 0, target, first, env)
+				local how = if tr[2] < 1 then "legal serve (aim eased, no sidespin, half spin)" else "legal serve (aim eased, no sidespin)"
+				local out = launch(shot.velocity, shot.spin, how, 0, target, first, env)
 				remember(out)
 				return finish(out)
 			end
 			if os.clock() > deadline then
 				break
 			end
+		end
+	end
+	-- 5 (Pass 12): the WIDE-ANGLE SCAN. From the widest serving spots close to the end line (about 11 studs outside a side
+	-- line, a few behind the end line) only a narrow band of launches is legal AND inside the envelope, which the aimed
+	-- first-bounce solve above can miss. A bounded grid of spin-free launches (WideScan: speeds x yaw toward the centre x
+	-- pitch; measured ~25-30 ms, found a safe serve at every such spot tested) picks the safe one whose receiver-side
+	-- bounce is nearest the aimed spot. Only reached when everything above failed; cached like every other result.
+	local function wideScan(): ServeLaunch?
+		local W = S.WideScan
+		if W then
+			local towardCentre = if contact.X < cx then 1 else -1
+			local aimed = ServeRules.target(aim, power, base)
+			local best: ServeLaunch? = nil
+			local bestErr = math.huge
+			for _, speed in W.Speeds do
+				for yawDeg = 0, W.MaxYaw, W.YawStep do
+					for pitchDeg = W.MinPitch, W.MaxPitch, W.PitchStep do
+						local yaw, pitch = math.rad(yawDeg) * towardCentre, math.rad(pitchDeg)
+						local dir = Vector3.new(math.sin(yaw) * math.cos(pitch), math.sin(pitch), towardBot * math.cos(yaw) * math.cos(pitch))
+						local v = dir * speed
+						local env = ShotLaunch.serveEnvelope(contact, v, Vector3.zero)
+						if env.ok and env.second then
+							local err = ((env.second :: Vector3) - aimed).Magnitude
+							if err < bestErr then
+								bestErr = err
+								best = launch(v, Vector3.zero, "legal serve (wide-angle scan)", 0, aimed, nil, env)
+							end
+						end
+					end
+				end
+			end
+			if best then
+				remember(best)
+				return best
+			end
+		end
+		return nil
+	end
+	-- (wide spots: the scan before the centre fallback's costlier attempts; elsewhere it stays the last resort)
+	if math.abs(contact.X - cx) > TableWorld.halfWidth + (S.WideScanFirstBeyond or 4) then
+		local best = wideScan()
+		if best then
+			return finish(best)
 		end
 	end
 	-- 4: the spin-free centre serve (always found within the budget in testing; the budget does not apply to it)
@@ -571,6 +650,12 @@ function ShotLaunch.serve(contact: Vector3, power: number, topspin: number, side
 		local shot, first, env = attempt(target, 0, 0)
 		if shot and env and env.ok then
 			return finish(launch(shot.velocity, shot.spin, if spinless then "legal serve (centre)" else "legal serve (spin-free centre fallback)", 0, target, first, env))
+		end
+	end
+	do
+		local best = wideScan()
+		if best then
+			return finish(best)
 		end
 	end
 	-- Unexpected: no safe serve from this contact. A plain drag-free guess toward the default first bounce; the ball still

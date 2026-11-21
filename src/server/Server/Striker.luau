@@ -7,6 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
 local ShotSolver = require(Shared:WaitForChild("ShotSolver"))
+local ShotLaunch = require(Shared:WaitForChild("ShotLaunch"))
 local TableWorld = require(Shared:WaitForChild("TableWorld"))
 
 local Striker = {}
@@ -92,7 +93,7 @@ end
 -- `state` (optional): the ball at contact. With Config.BotPlay pop-up settings, a pressed striker sometimes plays a
 -- high defensive LOB instead (chance = PopupRandomChance + PopupPressureChance * pressure): the smash opportunity.
 -- Returns shot, target, and "lob" | nil.
-function Striker:shot(from: Vector3, rng: Random, state: any?)
+function Striker:shot(from: Vector3, rng: Random, state: any?, returnIndex: number?)
 	local S = self.settings
 	local P = S :: any
 	if P.PopupPressureChance and state then
@@ -122,6 +123,9 @@ function Striker:shot(from: Vector3, rng: Random, state: any?)
 		rng:NextNumber(-S.TargetSpreadX, S.TargetSpreadX)
 	) + Vector3.new(rng:NextNumber(-S.AimError, S.AimError), 0, rng:NextNumber(-S.AimError, S.AimError))
 	local speed = S.ReturnSpeed + rng:NextNumber(-S.ReturnSpeedVariation, S.ReturnSpeedVariation)
+	if returnIndex then
+		speed *= ShotLaunch.rallyPaceFactor(returnIndex, speed) -- (Config.RallyPace, off by default; ordinary returns only, before the solve)
+	end
 	local shot = ShotSolver.solve(TableWorld.physics, from, target, {
 		speed = speed,
 		topspin = S.Topspin,

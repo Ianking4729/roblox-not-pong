@@ -18,7 +18,9 @@
 -- Recognition: a START needs, inside the last OnsetWindow seconds, net movement >= OnsetDistance, average speed >=
 -- OnsetSpeed and coherence >= Coherence (moves smaller than JitterPixels are ignored for this). The flick's SEGMENT
 -- begins at the first moving sample of that window and grows until the movement slows below SegmentEndFraction of its
--- peak, turns more than SegmentMaxTurnDeg, pauses for SegmentGap, or SegmentMax seconds after the start was detected.
+-- peak, turns more than SegmentMaxTurnDeg, pauses for SegmentGap, or SegmentMax seconds after the start was detected
+-- (2026-11-18: or, with Config.Flick.MeasureTime, once it has measured MeasureTime seconds from the flick's start: a short
+-- bounded measurement, so the swing is not held back waiting for the hand to stop).
 -- Its average speed (net distance / elapsed) and direction are the result. A sample faster than MaxSpeed is invalid:
 -- the whole gesture is rejected (state "invalid"), never clamped into a shot.
 
@@ -31,7 +33,7 @@ export type Flick = {
 	startT: number, -- os.clock() the flick started (the swing moment; contact = startT + Flick.ContactDelay)
 	detectT: number, -- when the start was recognised
 	endT: number, -- when the segment was closed (the swing is sent at this time)
-	closedBy: string, -- why the segment closed: "slow" | "turn" | "gap" | "timeout" (SegmentMax: still moving)
+	closedBy: string, -- why the segment closed: "slow" | "turn" | "gap" | "measured" (MeasureTime) | "timeout" (SegmentMax)
 	onsetEventT: number, -- when the segment's first sample was handled (preparation recorded before this is pre-flick)
 	distance: number, -- ref px, net
 	duration: number, -- s, elapsed over the segment
@@ -200,6 +202,10 @@ function FlickGesture.add(self: Detector, t: number, tPrev: number, dx: number, 
 			self.segStart = first
 			self.detectT = t
 			self.peak = speed
+			-- (MeasureTime) a slow frame can already cover the whole measurement: finalise now
+			if P.MeasureTime and t - samples[first].tPrev >= P.MeasureTime then
+				return self:finish(t, "measured")
+			end
 		end
 		return nil
 	end
@@ -216,6 +222,9 @@ function FlickGesture.add(self: Detector, t: number, tPrev: number, dx: number, 
 		return self:finish(t, if slow then "slow" else "turn")
 	end
 	self.peak = math.max(self.peak, instSpeed)
+	if P.MeasureTime and t - samples[i].tPrev >= P.MeasureTime then
+		return self:finish(t, "measured") -- the short bounded measurement is complete
+	end
 	if t - self.detectT >= P.SegmentMax then
 		return self:finish(t, "timeout")
 	end
@@ -228,8 +237,11 @@ function FlickGesture.update(self: Detector, t: number): Flick?
 		return nil
 	end
 	local P = self.P
+	local s = self.samples[self.segStart]
 	if t - self.lastMoveT >= P.SegmentGap then
 		return self:finish(t, "gap")
+	elseif P.MeasureTime and s and t - s.tPrev >= P.MeasureTime then
+		return self:finish(t, "measured")
 	elseif t - self.detectT >= P.SegmentMax then
 		return self:finish(t, "timeout")
 	end

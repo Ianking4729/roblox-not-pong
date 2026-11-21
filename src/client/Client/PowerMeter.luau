@@ -1,4 +1,5 @@
--- PowerMeter (client, cosmetic): the bottom-right "Power" and "Curve" bars (click-and-flick, 2026-11-17).
+-- PowerMeter (client, cosmetic): the bottom-right "Power" bar (and, with Feedback.PowerMeter.ShowCurve, the old "Curve"
+-- bar; replaced 2026-11-18 by Client/CursorTrace) (click-and-flick, 2026-11-17).
 --   Power = the power the flick's SPEED gave (ShotController.power after a flick; holding never fills it).
 --   Curve = the strength of the flick's spin (0..MaxSpin).
 -- Segmented bars, shown briefly after each flick. All tunables: Config.Feedback.PowerMeter.
@@ -78,6 +79,18 @@ function PowerMeter.new(screen: ScreenGui)
 	end
 	local powerFill = row("Power", 8, P.PowerColor)
 	local curveFill = row("Curve", 36, P.CurveColor)
+	if P.ShowCurve == false then
+		-- (2026-11-18) the Curve bar is replaced by the cursor trace (Client/CursorTrace): power only
+		local curveLabel = panel:FindFirstChild("CurveLabel") :: GuiObject?
+		local curveTrack = panel:FindFirstChild("CurveTrack") :: GuiObject?
+		if curveLabel then
+			curveLabel.Visible = false
+		end
+		if curveTrack then
+			curveTrack.Visible = false
+		end
+		panel.Size = UDim2.fromOffset(W + 96, 38)
+	end
 
 	local self = {}
 	-- power, curve: 0..1

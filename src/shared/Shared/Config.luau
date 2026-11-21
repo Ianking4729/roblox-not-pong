@@ -116,7 +116,7 @@ local Ball = {
 	Style = "Default", -- key into Config.BallStyles (cosmetic only)
 }
 
--- PLAYING PLATFORM: a flat slab under the table and both players, sitting on the Baseplate (whose top is Y = 0).
+-- PLAYING PLATFORM: a flat court under the table and both players (2026-11-21: a turf disc on the raised pier, see Pier).
 -- Its top surface IS the playing floor, so Arena.FloorY = Platform.Thickness. Size is derived from the table and the
 -- play area so it always supports them; Margin is the extra slab beyond the walkable area.
 local PlayArea = {
@@ -128,11 +128,21 @@ local PlayArea = {
 	BodyMarginX = 3.5,
 	BodyMarginZ = 2,
 }
+-- (2026-11-21 coastal pier) The platform is now the CIRCULAR TURF COURT: a flat disc (a Cylinder part, axis vertical)
+-- whose top is still the playing floor (FloorY unchanged). Radius 56 = the old slab's half-length along the table axis
+-- (55.6), chosen from a measured sweep of 400 simulated returns: the ball falls to 8 studs above the floor at a median
+-- 36.9 / p98 48.4 studs from the table centre, and to 3 studs (save height) at p98 54.2. The disc is wider than the old
+-- slab sideways (56 vs 33.25). Size = the disc's footprint bounds (2R x Thickness x 2R). The old rectangle is kept as
+-- LegacyRectSize (the bot's lateral limit still uses it, so the bot moves exactly as before).
+local PLATFORM_RADIUS = 56
 local Platform = {
 	Thickness = 1,
+	Shape = "Disc", -- "Disc" (circular court) | "Rect" (the pre-2026-11-21 slab)
+	Radius = PLATFORM_RADIUS,
 	Material = Enum.Material.SmoothPlastic,
-	Color = Color3.fromRGB(88, 92, 100),
-	Size = Vector3.new(
+	Color = Color3.fromRGB(92, 168, 72), -- (the Disc part is invisible collision; the visible turf is Pier.Colors.Turf)
+	Size = Vector3.new(2 * PLATFORM_RADIUS, 1, 2 * PLATFORM_RADIUS),
+	LegacyRectSize = Vector3.new(
 		Table.Width + 2 * (PlayArea.SideMargin + 8),
 		1,
 		Table.Length + 2 * (PlayArea.BackLimit + 8)
@@ -229,11 +239,58 @@ local Serve = {
 	ContactMaxHeight = 13.0,
 	WeakEdge = 0.2,
 	HitDelay = 0.07, -- seconds (NP_ServeStrike's Hit marker is 0.067 s)
-	-- LEGAL SERVING REGION (derived from the table and the platform at runtime): the ball must leave the hand behind the
-	-- server's end line (by at least the ball's radius), across the table's width plus CornerAllowance beyond either side
-	-- line, with the character on the platform. Checked by the server at the toss; shown on the floor by the client.
-	CornerAllowance = 3, -- studs beyond each side line
-	RegionDepth = 22, -- studs behind the end line the region extends (the platform edge limits it too)
+	-- LEGAL SERVING REGION (2026-11-19 Pass 12; ServeRules.region): ANYWHERE ON THE PLATFORM behind the server's end
+	-- line, beyond either side line included: the ball must leave the hand behind the end line (by at least the ball's
+	-- radius) and inside the platform's footprint, with the character's root on the platform and the feet on the ground.
+	-- Derived from Config.Platform / Layout at runtime (no radius, lateral or depth limits). Checked by the server at the
+	-- toss. (The walls / guard limit where the character can actually stand: Layout.PlayerArea.)
+	CornerAllowance = 3, -- (legacy, unused since Pass 12: the old region's studs beyond each side line)
+	RegionDepth = 22, -- (legacy, unused since Pass 12: the old region's depth behind the end line)
+	ShowRegionDebug = false, -- DEVELOPER ONLY: outline the legal release region on the floor (the player never sees it)
+	-- SERVE LANDING GUIDE (Client/ServeGuide; Pass 12, reworked Pass 13). From the ball resting in your hand on your serve
+	-- until contact:
+	--   PROVISIONAL (preparation and toss, before the flick): a REPRESENTATIVE serve (Representative below: power 0.5,
+	--     no spin, clean, at the toss's typical contact point, your current aim) solved by the same ShotLaunch.serve as the
+	--     server. It is a typical serve, not your final one, so it is drawn fainter (dashes, ring and arrow).
+	--   FINAL (flick -> contact): the predicted serve from your real inputs, full strength.
+	-- The guide hides at contact (it is not drawn over the struck ball). White dashed line FLAT ON THE TABLE along the
+	-- predicted flight's ground track, through the first bounce to the RECEIVER-SIDE landing (second bounce), hollow ring there, short downward arrow filling tail -> tip on a loop
+	-- whose clock never restarts for a moving target.
+	Guide = {
+		DashWidth = nil :: number?, -- studs; nil = the measured BallVisual diameter x DashWidthScale (1.5 studs today)
+		DashWidthScale = 0.45, -- (Pass 13: 1.0 = the ball's diameter read as too thick; ~0.7 studs)
+		DashThickness = 0.06, -- studs (the dashes lie flat on the table)
+		FlatLift = 0.04, -- studs above the table surface
+		DashLength = 1.6, -- studs
+		DashGap = 1.1, -- studs
+		MaxDashes = 40,
+		DashTransparency = 0.25, -- final path
+		ProvisionalTransparency = 0.45, -- representative path before the flick
+		EndTrim = 1.6, -- studs: the dashes stop this far before the landing (the ring / arrow tip stay clean)
+		RingRadius = 2.0, -- studs (Pass 13: was 1.6; seen at a grazing angle from the serve camera)
+		RingThickness = 14, -- px on a 128 px canvas
+		RingTransparency = 0.05,
+		ProvisionalRingTransparency = 0.3,
+		ArrowHeight = 2.4, -- studs, tail to tip (the tip touches the ring's centre)
+		ArrowWidth = 1.1, -- studs, the head's width
+		ArrowMinHeightPx = 40, -- + these pixels, so it stays readable from the serve camera (measured 23 px studs-only)
+		ArrowMinWidthPx = 20,
+		ArrowTrackTransparency = 0.8, -- the empty arrow (faint, like the contact ring's track)
+		ProvisionalArrowStrength = 0.75, -- the fill's opacity before the flick (x the final's)
+		MarkerOnTop = false, -- (tested true: the AlwaysOnTop arrow did not appear in Studio captures at all; false renders)
+		FillTime = 0.45, -- s, tail -> tip
+		HoldTime = 0.35, -- s, the full arrow before the next fill
+		SnapDistance = 6, -- studs: a provisional landing that jumps further than this snaps instead of sliding
+		Smoothing = 14, -- 1/s: the ring / arrow ease toward a new landing
+		FadeTime = 0.3, -- s (fault / reset / mode change)
+		ContactFadeTime = 0.12, -- s: the fade at contact
+		Color = Color3.fromRGB(255, 255, 255),
+		-- the representative serve shown before the flick (documented, not a prediction of your final inputs)
+		Representative = { Power = 0.5, Topspin = 0, Sidespin = 0, Quality = "clean" },
+		ResolveInterval = 0.12, -- s: at most this often the representative serve is re-solved ...
+		ResolveAim = 0.03, -- ... and only if the aim moved this much
+		ResolveMove = 0.75, -- ... or the hand this many studs
+	},
 	-- LEGAL-SERVE SOLVE (ShotLaunch.serve; shared physics, decided once at contact, nothing steered afterwards). The
 	-- second bounce (on the receiver's half) is placed by the inputs: across the table by the AIM (-1 = the receiver's
 	-- left as you look at it .. +1 = right, staying LateralMargin inside the side lines), along it by the POWER (from
@@ -277,6 +334,10 @@ local Serve = {
 	SolveFlightTime = 1.2,
 	SolveCost = { MaxIterations = 14, MaxFactors = 2, Tolerance = 0.15, BisectSteps = 10 },
 	SolveBudget = 0.035,
+	WideSolveBudgetExtra = 0.02, -- (Pass 12) extra seconds for contacts outside the table's width (the widest serving spots)
+	-- (Pass 12) last-resort spin-free launch grid for the widest spots close to the end line (ShotLaunch.serve step 5)
+	WideScanFirstBeyond = 4, -- studs outside a side line from which the scan runs before the centre fallback
+	WideScan = { Speeds = { 40, 55, 70, 90 }, MaxYaw = 40, YawStep = 5, MinPitch = -25, MaxPitch = 15, PitchStep = 5 },
 	AimDeadZone = 0.05, -- fraction of the half-screen around the centre that aims straight
 	-- AIM INDICATOR (client): a line from the hand over the table to a ring on the receiver's half where the serve's
 	-- second bounce is aimed (its depth follows the power while charging: a placement cue, not a predicted path).
@@ -341,7 +402,78 @@ local Layout = {
 	},
 }
 
+-- COASTAL PIER (2026-11-21, structural blockout; cleanup pass 2026-11-21b). Server/PierBuilder SYNCS Workspace.NotPongCoast
+-- in Edit mode from these values (it updates its own structural parts in place; see PierBuilder for what it owns).
+-- From the centre outward, every band directly adjoining the next:
+--   turf court (visual turf + the invisible Platform collision disc) -> white rim -> walkable GLASS -> dark inner border
+--   -> turquoise band -> dark outer border -> warm promenade -> railing.
+-- All bands share ONE radial height function (PierBuilder.heightAt == TableWorld ground): flat at the playing floor
+-- across the court and rim, then rising RiseSlope studs per stud outward (a shallow upturned cone; no steps). Below:
+-- open air down to the lower beach (BeachTopY), with minimal pier columns. Layout.FloorY is unchanged.
+-- Every circular edge is generated from the same centre (Layout.PlatformCenter) and radii with the same Segments
+-- divisions, so neighbouring bands share their vertices exactly (no gaps, no overlaps, no z-fighting).
+local Pier = {
+	Folder = "NotPongCoast",
+	Segments = 128, -- divisions around the circle (a 128-gon is within 0.017 studs of the true circle at the court edge)
+	GlassPanelSegments = 2, -- segments merged into one glass panel (64 visible panels; joints every other division)
+	RimWidth = 1.5,
+	RimLift = 0, -- the rim's top above the turf (0 = flush; the turf and rim now share their edge exactly)
+	GlassWidth = 24,
+	-- turquoise trim with a dark border either side (distinct architectural bands, flush and walkable)
+	InnerBorderWidth = 0.35,
+	TrimWidth = 1.8,
+	OuterBorderWidth = 0.35,
+	PromenadeWidth = 16,
+	RiseSlope = 0.06, -- studs of rise per stud outward from the rim's outer edge (~3.4 degrees)
+	TurfThickness = 0.3, -- the visual turf layer (its top is the playing floor)
+	TurfEdgeWidth = 2.5, -- the exact 128-gon ring that meets the rim; the rest of the turf is one plain disc (fewest edges)
+	GlassThickness = 0.6,
+	TrimThickness = 1.4, -- (the borders use the same depth)
+	PromenadeThickness = 1.6,
+	RimDepth = 2.5, -- the rim's white fascia reaches down to the deck slab's underside
+	DeckThickness = 2.2, -- structural slab under the turf layer (its underside is FloorY - TurfThickness - DeckThickness)
+	BeachTopY = -12, -- the lower beach's surface (the old Baseplate top was 0)
+	RailHeight = 9.5, -- (about hip height on the 17.5-stud avatars)
+	RailPostEvery = 2, -- a railing post every N divisions (64 posts at Segments 128)
+	ColumnDiameter = 1.6,
+	-- Column rings. Radius = a fixed radius, or Band = the middle of that band ("Rim", "Trim" = inner border..outer
+	-- border), or Band = "PromenadeOuter" with Inset = studs in from the promenade's outer edge.
+	ColumnRings = {
+		{ Radius = 30, Count = 8 },
+		{ Band = "Rim", Count = 24 },
+		{ Band = "Trim", Count = 24 },
+		{ Band = "PromenadeOuter", Inset = 1.1, Count = 32 },
+	},
+	StairAngle = 0, -- degrees around the court centre (0 = +X) where a plain ramp leads from the promenade down to the beach
+	StairWidth = 10,
+	StairRun = 46,
+	ShoreX = -150, -- the beach meets the water at this world X (the ocean is on the -X side)
+	-- Default looks, applied ONLY when PierBuilder first creates a part (afterwards colours / materials are yours).
+	Colors = {
+		Turf = Color3.fromRGB(92, 168, 72),
+		Deck = Color3.fromRGB(190, 190, 185),
+		Rim = Color3.fromRGB(245, 245, 240),
+		Glass = Color3.fromRGB(190, 225, 240),
+		Frame = Color3.fromRGB(150, 160, 170),
+		Border = Color3.fromRGB(58, 62, 68), -- dark grey, not black
+		Trim = Color3.fromRGB(46, 184, 184), -- restrained turquoise (SmoothPlastic, not Neon)
+		Promenade = Color3.fromRGB(198, 122, 74),
+		Rail = Color3.fromRGB(70, 76, 84),
+		Column = Color3.fromRGB(150, 150, 148),
+		Sand = Color3.fromRGB(228, 208, 160),
+		Shallow = Color3.fromRGB(70, 200, 205),
+		Deep = Color3.fromRGB(30, 105, 175),
+	},
+	GlassTransparency = 0.6,
+	-- BALL GROUND (Shared/TableWorld world.ground, used by every ball simulation and prediction): the court and rim at
+	-- FloorY, the deck bands on the same slope, the beach below. Beyond the pier the point still ends where the old
+	-- floor plane was (the ball crossing FloorY + radius), so no point lasts longer than before; the ball then keeps
+	-- falling to the beach for the eye only.
+	BallGround = true,
+}
+
 local Config = {
+	Pier = Pier,
 	Scale = {
 		StudsPerMeter = STUDS_PER_METER,
 		MetersPerStud = 1 / STUDS_PER_METER,
@@ -447,6 +579,23 @@ local Config = {
 	},
 
 	-- BOT opponent (server). Reach and anchor are in studs, relative to the bot's root, in its own facing frame.
+	-- RALLY PACE EXPERIMENT (2026-11-19; DISABLED by default: compare with the baseline first). Return n of a point (the
+	-- serve is not a return; the count restarts with every serve, replayed serves included): returns 1..FreeReturns at the
+	-- baseline speed, then +StepPercent per return up to +MaxPercent, computed from the rally count (never by compounding the
+	-- incoming ball). Applied to the SPEED INPUT of ordinary shots before their trajectory is solved (the player's
+	-- ShotLaunch.compute speedFactor, the bot's ShotSolver speed), so every shot is still calibrated / legal and the
+	-- client's prediction uses the same factor (ShotLaunch.rallyPaceFactor). Never applied to serves, smashes (their own
+	-- SmashSpeed), emergency lobs or the bot's pop-ups; backspin keeps its slower launch (the factor multiplies it).
+	-- MaxSpeed caps the escalated launch speed overall (a shot already faster than it is left at its baseline).
+	-- (2026-11-19 Pass 12) ON, cap raised to +20% (the step and the opening exchanges unchanged: +2% per return from return
+	-- 5, the cap reached at return 14). The trail's rally colours follow this schedule (Feedback.Trail.RallyColors).
+	RallyPace = {
+		Enabled = true, -- (false = the baseline: no escalation, white trail throughout)
+		FreeReturns = 4,
+		StepPercent = 2,
+		MaxPercent = 20, -- (was 10)
+		MaxSpeed = 130, -- studs/s, horizontal launch speed
+	},
 	BotPlay = {
 		Reach = 8, -- horizontal studs from the paddle anchor within which the bot can hit
 		AnchorRight = 4, -- paddle anchor: this far to the bot's right ...
@@ -877,19 +1026,25 @@ local Config = {
 		SwingCooldown = 0.3, -- seconds between swing requests
 		ResultTimeout = 1, -- client: seconds to wait for the server's verdict
 		RecoveryTime = 0.35, -- client: seconds in RECOVERY before aiming again
-		-- FOREHAND / BACKHAND: the mouse's horizontal SCREEN position picks the stroke (left half = backhand, right half =
-		-- forehand). Followed while idle; locked from the moment charging starts until the stroke's recovery ends.
-		-- StrokeDeadZone: fraction of the screen width either side of the centre where the current stroke is kept
-		-- (hysteresis, so the pose does not flicker when the cursor rests near the middle).
-		StrokeDeadZone = 0.03,
+		-- FOREHAND / BACKHAND SELECTION (2026-11-18): "Q" = the Q key toggles the rally stroke (the cursor only prepares
+		-- placement / height); "Cursor" = the previous rule (left of the screen centre = backhand, right = forehand, with
+		-- StrokeDeadZone hysteresis). Q during your own serve (ball in hand) still switches the SERVING POSTURE only.
+		StrokeSelect = "Q",
+		StrokeDeadZone = 0.03, -- ("Cursor" selection only)
 		ShowDiagnostics = true, -- development-only debug bridges (Player.NotPongShotDebug / NotPongArrowDebug) used by Studio test scripts
-		ShowInputDebug = true, -- TEMPORARY developer indicator (top left): rally input mode + PREPARING / SWING RECOGNIZED / RECOVERING / IGNORED / MISS reason. Set false to hide.
-		-- RALLY INPUT MODE (2026-11-17 input experiment; exactly ONE is active, serves are the same in both):
-		--   "ClickLock"  click-and-flick: hold left-click to lock stroke / aim / profile, flick while holding = the swing
-		--   "MouseOnly"  no button: the cursor prepares, a deliberate flick while the ball is coming = the swing, with the
-		--                preparation from just before the flick (Shared/MouseSwing; tunables Config.MouseOnlyRally)
-		-- Switch back = set "ClickLock". Ball speed, reach, contact timing, power / spin mapping and shot physics are the same.
-		RallyInput = "MouseOnly",
+		ShowInputDebug = true, -- TEMPORARY developer indicator (bottom left): stroke (selected / queued), PREPARING / COMMITTED / SWING / RECOVERING, last miss reason. Set false to hide.
+		-- (The 2026-11-17 button-free "MouseOnly" rally prototype was superseded on 2026-11-18: rallies use hold-left-click
+		-- + flick only. Shared/MouseSwing is no longer loaded.)
+		-- RESPONSE (2026-11-18): the paddle stroke starts at the flick's ONSET (timed to reach the ball at the contact
+		-- moment); the ball's new flight is shown locally at the contact moment from the client's prediction of the
+		-- server's launch (the server's snapshot then corrects it; a refused / missed swing reverts it). false = the
+		-- previous behaviour (stroke at recognition, ball response after the server round trip).
+		StrokeAtOnset = true,
+		PredictBallResponse = true,
+		-- CONTACT ZONE MODEL (2026-11-18): "Body" = Config.ContactZone (one symmetric zone around the torso, the same for
+		-- forehand and backhand); "Anchor" = the previous model (a PaddleReach circle around a point AnchorRight to the
+		-- side of the selected stroke and AnchorForward in front). Serves always use the Anchor rule (ServeRules).
+		ContactModel = "Body",
 	},
 
 	-- ===== CLICK-AND-FLICK SHOTS (2026-11-17; replaces hold-to-charge / drag / release-to-strike) =====================
@@ -924,6 +1079,10 @@ local Config = {
 		SegmentEndFraction = 0.35, -- ... or when a frame's speed falls below this fraction of the segment's peak
 		SegmentMaxTurnDeg = 60, -- ... or a frame's movement turns this far from the segment's direction
 		SegmentGap = 0.03, -- ... or no movement for this long
+		-- SHORT BOUNDED MEASUREMENT (2026-11-18): the flick is finalised once its segment has measured this many seconds
+		-- from the flick's start (or earlier when it slows / turns / pauses), instead of waiting up to SegmentMax after the
+		-- onset was detected. Holding the button already arms the stroke, so there is nothing to wait for. nil = the old rule.
+		MeasureTime = 0.04,
 		MinElapsed = 1 / 240, -- s: elapsed-time floor for one sample (no division by ~0 at high event rates)
 		MaxSpeed = 20000, -- ref px/s: faster = an invalid sample (rejected, never clamped into a shot)
 		-- power from the segment's average speed
@@ -940,6 +1099,7 @@ local Config = {
 		RecognitionAllowance = 0.11,
 	},
 
+	-- (RETIRED 2026-11-18, kept for reference only: nothing loads Shared/MouseSwing any more.)
 	-- MOUSE-ONLY RALLY PROTOTYPE (ShotControl.RallyInput = "MouseOnly"; Shared/MouseSwing + Client/ShotController).
 	-- The flick is measured with the same Config.Flick thresholds as click-to-lock; these only separate a flick from
 	-- moving the paddle into position, and say when a flick may count as a swing.
@@ -981,6 +1141,24 @@ local Config = {
 		DriveDepthBonus = 0, -- profile 0: + this to the landing depth (0..1 of the half)
 		ArcDepthBonus = 0.08, -- profile 1: lands a little deeper
 		ArcClearance = 3.5, -- profile 1: net clearance (studs) the calibration asks for; profile 0 uses Rally.NetClearance
+	},
+
+	-- BODY-CENTRED CONTACT ZONE (2026-11-18; ShotControl.ContactModel = "Body"; Shared/ShotInput.bodyZone). One
+	-- symmetric volume around the player's root, the SAME for forehand and backhand, oriented along the table (forward =
+	-- toward the opponent). Horizontally two half-ellipses (Forward ahead, Back behind, Side to either side), vertically
+	-- LowAboveFloor .. HighAboveFloor. A ball centre inside it at the judged contact moment can be hit; nothing else (no
+	-- body part, accessory or paddle collision) ever makes contact. Assisted reach, sized to the avatar (block rig x3.37:
+	-- root ~10.1 above the floor, head top ~17.4, shoulder top ~13.3 and 5.0 right of the root, arm + blade ~10).
+	-- PREVIOUS (Anchor model, per stroke): a 9.48-stud circle centred 4 studs to the stroke's side and 3 ahead, 4..20
+	-- above the floor: forehand covered 5.5 left .. 13.5 right, 6.5 behind .. 12.5 ahead (282 sq studs); the other side
+	-- needed the other stroke. NOW: 13.5 either side, 3.5 behind .. 13 ahead (350 sq studs), 4..22 above the floor, both
+	-- strokes. EMERGENCY: the same shape 4.5 studs bigger to the sides and ahead, limited behind (was: the anchor circle
+	-- + 4.5). Being inside never hits by itself: you still commit and flick at a valid time.
+	ContactZone = {
+		Normal = { Side = 13.5, Forward = 13, Back = 3.5, LowAboveFloor = 4, HighAboveFloor = 22 },
+		Emergency = { Side = 18, Forward = 17.5, Back = 5, LowAboveFloor = 3, HighAboveFloor = 24 },
+		SweetForward = 4.5, -- studs ahead of the root: the ideal-contact point (the ball closest to it = the ideal moment)
+		Visualize = false, -- DEVELOPER ONLY (Pass 12: off for players): outline of both zones + the sweet-point post around you (also NotPongShotDebug "zones")
 	},
 
 	-- EMERGENCY SAVE (2026-11-17; replaces the F dive and its automatic return). Two reach zones around the stroke's anchor:
@@ -1064,6 +1242,33 @@ local Config = {
 		-- Optional jump cap (studs). nil = leave the Roblox jump alone. Not needed to keep players off the table
 		-- (TableGuard does that); set a number only if you want lower jumps.
 		MaxJumpHeight = nil :: number?,
+		-- ORDINARY JUMP (2026-11-19 Pass 12). Measured before: the default jump scaled with the 3.37x avatar (JumpPower 91.8)
+		-- rose ~21.5 studs and stayed ~0.94 s in the air (floaty). Now a moderate, quicker jump: Height studs at the apex
+		-- and AirTime seconds off the ground, from the CHARACTER's own extra gravity while airborne (a VectorForce on the
+		-- local character's root, Client/JumpController; workspace.Gravity and the ball physics are untouched) plus the
+		-- matching JumpPower (MovementService). Space jumps in rallies and free roaming; on your serve Space only tosses.
+		-- While airborne the stance / footwork tracks yield to Roblox's jump / fall animations (StancePose), blending back
+		-- over StanceFadeIn after landing; the visual smash hop never starts in the air (no double lift).
+		Jump = {
+			Enabled = true,
+			Height = 6, -- studs at the apex (the avatar is 17.5 tall)
+			AirTime = 0.42, -- seconds from take-off to landing on flat ground
+			AirGrace = 0.12, -- s of Freefall (not a jump) before the stance yields (stepping off a small ledge)
+			StanceFadeOut = 0.1, -- s
+			StanceFadeIn = 0.18, -- s
+			YieldStance = true,
+			-- measured 2026-11-19: the engine's take-off speed was ~1.05x JumpPower and the first airborne frame adds ~0.8
+			-- studs (apex 7.3 for Height 6); this scale brings the measured apex to ~Height
+			TakeoffScale = 0.9,
+			CutJumpHold = true, -- end the Humanoid's Jumping state (which holds the take-off speed ~0.12 s) after one frame
+			-- (Pass 15) ONE JUMP PER GROUNDED CYCLE (Client/JumpController): grounded = a raycast finds the floor within
+			-- GroundTolerance studs of the rest height (hip + half the root) and the root rises slower than MaxRiseGrounded
+			-- studs/s. The Humanoid's own floor state is not trusted (it reports a floor through the whole jump on this rig).
+			GroundTolerance = 0.8,
+			MaxRiseGrounded = 12,
+			GroundReach = 8, -- studs of ray beyond the rest height
+			HeldGrace = 0.08, -- s a jump input counts as still held (a fresh press needs this long released)
+		},
 		-- (The F dive, its lunge, 1.3 s recovery, stamina cost and AUTOMATIC return were retired on 2026-11-17: the
 		-- EMERGENCY SAVE in the click-and-flick shot replaces them, Config.Emergency.)
 	},
@@ -1145,16 +1350,68 @@ local Config = {
 		PrepSmoothing = 18, -- 1/s: the pose eases toward the cursor's prepared pose (no snaps when the cursor jumps)
 		MinStrikeTime = 0.06, -- s: the quickest stroke from preparation to contact (a flick recognised late)
 		FollowTime = 0.16, -- s: contact -> follow-through
-		-- WIND-UP at a credible flick ONSET (before the flick is finalised; reversible: an ignored candidate eases back):
-		-- extra joint angles (same layout as Follow), reached in WindupTime, dropped after WindupMax without a swing
+		-- SMASH HOP (2026-11-19; visual only: no jump velocity, reach, root displacement, slowdown or lock): on a credible smash
+		-- attempt (the predicted contact is smash-eligible, ShotInput.smashEligible, the flick's onset is fast enough, and not an
+		-- emergency save) the body dips at the flick onset, rises to its peak just after the contact and lands with a knee
+		-- absorb, by offsetting the LowerTorso root joint + flexing the legs (the physics root never moves). The dip is
+		-- squeezed into the time left before the contact (never delaying it); Total is the whole action in seconds.
+		-- Heights are fractions of the avatar's leg length (upper + lower leg), so they follow the avatar's scale.
+		SmashHop = {
+			Enabled = true,
+			Total = 0.36, -- s, whole action from the onset
+			DipTime = 0.06, -- s, at most (shorter when the contact is nearer)
+			DipFraction = 0.2, -- crouch depth (of leg length)
+			RiseFraction = 0.3, -- peak rise (of leg length)
+			PeakAfterContact = 0.04, -- s: the peak comes this long after the contact (the paddle meets the ball on the way up)
+			LandFraction = 0.62, -- of Total: the feet are back on the floor
+			AbsorbFraction = 0.6, -- landing knee absorb depth (of the dip)
+			OnsetSpeed = 1800, -- ref px/s: the onset must be at least this fast (a soft flick at a high ball is not a smash attempt)
+			HipSign = 1, -- direction of the hip / knee flexion (R15 joint axes; verified by measuring the feet)
+			KneeSign = -1,
+			LegFlex = 0.84, -- multiplier on the computed leg flexion, tuned by measuring the feet against the floor during the dip (1.0 floated them 0.45 studs, 0.85 -> 0.03)
+			FadeOut = 0.08, -- s: the hop eases out when the swing turns out not to be a smash
+			FreezeAt = nil, -- REVIEW ONLY: a time (s from the onset) holds the hop at that pose; nil in play
+			TimeScale = 1, -- REVIEW ONLY: > 1 stretches the identical motion (e.g. to capture stills); keep 1 in play
+		},
+		-- (2026-11-18) with ShotControl.StrokeAtOnset the stroke starts at the flick's ONSET and may be this quick (the
+		-- onset is recognised ~1-2 frames after the hand starts; contact is Flick.ContactDelay after the start)
+		OnsetMinStrikeTime = 0.025,
+		-- WIND-UP = the COMMITTED (cocked) paddle while left-click is held (2026-11-18: shown from the press, eased back on
+		-- release / cancel; a swing starts from it). Extra joint angles (same layout as Follow), reached in Time. Max is
+		-- unused while committed (the hold can be as long as you like).
 		Windup = {
 			Enabled = true,
-			Time = 0.05,
+			Time = 0.08,
 			Max = 0.25,
 			Forehand = { -9, -2, 10, 7, 0, 0, 0, 0 }, -- back and open (about -0.4 x the follow-through)
 			Backhand = { -5, 15, 0, 8, 0, 0, 0, 0 },
 		},
 		ReturnTime = 0.3, -- s: follow-through -> preparation
+		-- STROKE PROFILES (2026-11-19; reference: docs/Not pong obsidian vault/drive-swing-animations.png). The follow-through is
+		-- SOLVED like the contact (Shared/PaddleArm.solveContact) toward a blade target in the upper torso's frame, given as
+		-- { right, up, forward } in units of ArmReach (Face = the striking face's direction there, same frame), plus an extra
+		-- torso turn Waist = { lean, twist, side bend } degrees (measured on the avatar: + twist turns LEFT, + lean tilts BACK,
+		-- + bend tilts LEFT). INTENSITY 0..1 comes from the shot's actual power (SoftPower .. StrongPower): a soft return only
+		-- travels Reach.x of the way from the contact to the target with a little of the torso turn; a strong one all of it.
+		-- Smash = the server's smash rule (any stroke): cocked above / behind the playing shoulder while committed (Cock), high
+		-- contact (the ball's legal height), then DOWN and across to the opposite hip. Scoop = an emergency save: the blade
+		-- goes UNDER the ball with an open face (ScoopUp of the way from the outgoing direction to straight up), then lifts
+		-- forward (Follow in WORLD terms: right = 0, up, forward = along the shot). false = the previous fixed offsets (Follow).
+		Strokes = {
+			Enabled = true,
+			SoftPower = 0.35,
+			StrongPower = 0.85,
+			Forehand = { Follow = { -0.55, 0.25, 0.55 }, Face = { -1, 0.2, 0.4 }, Waist = { -6, 18, 0 }, Reach = { 0.35, 1 }, FollowTime = { 0.12, 0.2 } },
+			Backhand = { Follow = { 0.8, 0.1, 0.7 }, Face = { 0.7, 0.1, 0.7 }, Waist = { 0, -14, 0 }, Reach = { 0.4, 1 }, FollowTime = { 0.1, 0.16 } },
+			Smash = {
+				Follow = { -0.45, -0.55, 0.55 }, Face = { -0.2, -0.8, 0.5 }, Waist = { -14, 16, 0 }, Reach = { 1, 1 }, FollowTime = { 0.22, 0.22 },
+				Cock = { 0.5, 1.0, -0.3 }, CockFace = { 0, 0.5, 1 }, -- above / behind the playing shoulder (committed, smash-height ball)
+			},
+			Scoop = { Follow = { 0, 0.4, 0.25 }, ScoopUp = 0.75, Waist = { 8, 0, 0 }, Reach = { 1, 1 }, FollowTime = { 0.24, 0.24 } },
+			HoldTime = 0.04, -- s at the end of the follow-through before returning to the ready pose
+			-- REVIEW ONLY: hold the paddle arm at contact + this many seconds of the current stroke (nil in play)
+			FreezeAt = nil,
+		},
 		-- extra joint angles at the follow-through ({ shoulder x, y, z, elbow x, y, wrist x, y, z }, degrees)
 		Follow = {
 			Forehand = { 22, 6, -26, -18, 0, 0, 0, 0 }, -- up and across the body
@@ -1182,8 +1439,10 @@ local Config = {
 		-- 3D trajectory arrow (Client/TrajectoryArrow): the predicted flight of the charged shot, from the predicted
 		-- paddle contact to the first predicted landing, simulated with the shared BallPhysics. Shown while charging.
 		Arrow = {
-			Color = Color3.fromRGB(236, 170, 255), -- bright core (additive glow)
-			GlowColor = Color3.fromRGB(176, 60, 255), -- wider purple halo (not additive, so it stays purple on any table colour)
+			-- (Pass 13) BLUE: the shot preview must not share a colour with the ball's own trail (white / yellow / red / purple
+			-- rally stages, orange vulnerable ball); it was purple, the same as the capped rally trail
+			Color = Color3.fromRGB(170, 215, 255), -- bright core (additive glow)
+			GlowColor = Color3.fromRGB(40, 110, 255), -- wider blue halo (not additive, so it stays blue on any table colour)
 			BadColor = Color3.fromRGB(255, 70, 90), -- predicted to hit the net / miss the table
 			Width = 0.45, -- studs, core
 			GlowWidth = 1.3, -- studs, halo
@@ -1200,8 +1459,75 @@ local Config = {
 			-- fail, or the predicted landing is within EdgeMargin studs of a side line, the end line or the net line.
 			TimingLookahead = 0.05,
 			EdgeMargin = 1.5,
-			RiskyColor = Color3.fromRGB(255, 190, 70),
+			RiskyColor = Color3.fromRGB(150, 235, 255), -- (Pass 13: was amber, read as the orange vulnerable-ball cue)
 			EndRingRadius = 1.5, -- studs: highlight on the predicted landing spot
+			-- PROGRESSIVE REVEAL (2026-11-18 Pass 1): after the flick is finalised the predicted path DRAWS from the contact
+			-- point to the predicted landing in RevealTime (well inside any flight time, so its leading edge stays ahead of
+			-- the real ball), stays HoldTime, then fades over FadeTime. The landing ring and NET / OUT label appear when the
+			-- reveal reaches them. When the server's verdict arrives the path is recomputed from the server's own launch
+			-- (velocity + spin); a miss / refusal removes it. false = the previous always-full arrow.
+			Reveal = true,
+			RevealTime = 0.15, -- (Pass 13: was 0.22)
+			HoldTime = 0, -- (Pass 13: was 0.45; the preview no longer lingers over the real, already resolved flight)
+			FadeTime = 0.15, -- (Pass 13: was 0.3; measured, it still covered the real ball's early flight)
+		},
+		-- CURSOR TRACE (2026-11-18 Pass 1; replaces the Curve bar and the flick dial's spin arrow): while left-click is held,
+		-- the ACTUAL relative mouse movement the flick detector receives is drawn as a short screen-space trace around the
+		-- held cursor (a virtual trace: the real cursor is never moved, the trace never feeds back into the shot). Scale
+		-- converts reference px to screen px; the whole trace shrinks uniformly to stay inside MaxRadius. Thickness and
+		-- brightness follow each sample's speed (OnsetSpeed .. FullPowerSpeed of Config.Flick); the part the detector
+		-- measured is bright, the hold drift before it and the hand's tail after it faint. Fades FadeTime after the stroke.
+		CursorTrace = {
+			Enabled = true,
+			-- VISUAL SIZE (2026-11-19): one multiplier on Scale, MaxRadius, the thicknesses and the end marker (1 = the Pass 1
+			-- size; 1.24 = 24% larger). Uniform, so the trace's direction is never distorted; the gesture itself (sensitivity,
+			-- thresholds, power, spin) is not touched.
+			Size = 1.24,
+			Scale = 0.5,
+			MaxRadius = 110, -- px
+			Window = 0.35, -- s of movement before the flick that stay drawn
+			TailTime = 0.12, -- s of movement after the flick was finalised still drawn (display only)
+			MinThickness = 2,
+			MaxThickness = 6,
+			Color = Color3.fromRGB(120, 230, 255), -- cyan: distinct from the purple world-space arrow
+			FaintTransparency = 0.7,
+			FadeTime = 0.45,
+			MaxSegments = 40,
+		},
+		-- ATTACKABLE HIGH BALL TRAIL (2026-11-18 Pass 1): when the server classifies a hit as giving the receiver a smash
+		-- opportunity (ShotInput.highBallWindow: after its legal bounce the ball passes through smash height, inside the
+		-- reachable height band, not too far behind the receiver's end line), the ball's normal trail blends into a thin
+		-- orange wavy line (+ a wider faint companion) following the rendered ball, and back when the opportunity ends.
+		-- The wave is a sum of three slow sines in distance travelled (wavelengths below, phases seeded per ball) under a
+		-- slow amplitude envelope: smooth, varied, never per-frame random.
+		HighBallTrail = {
+			Enabled = true,
+			-- (Pass 12) WHO GETS ORANGE (server, RallyService.strike, the same for both competitors, decided at the hit):
+			--   * every defensive LOB: a player's emergency save, the bot's pop-up (always, smash window or not);
+			--   * every other HIGH return that opens a smash: its predicted post-bounce flight passes through the receiver's
+			--     legal smash band (ShotInput.highBallWindow) for at least MinWindow AND it flies high (pre-bounce apex >=
+			--     MinFlightApex above the table) or sits up after its bounce (post-bounce apex >= MinApex).
+			-- Measured 2026-11-19 (scripted rallies, normal arcs): ordinary drives window 0-0.30 s, apex 7.6-9.7, flight
+			-- apex 11.6-15.3 (no orange); saves 0.27-0.36 s / 9.0-9.3 / 17.1-17.4; high returns 0.40-0.77 s / 10.8-14.9 /
+			-- 17.4-29.7 (orange). The old filter (window >= 0.4 s and apex >= 9.5) missed saves and some high returns.
+			-- NOTE: by the smash rule alone (centre >= 7.5 above the table) most drives that bounce up are technically
+			-- smashable with tight timing; orange marks the clearly high / vulnerable ones only.
+			MinWindow = 0.05, -- s
+			MinApex = 10, -- studs above the table after the bounce ("sits up")
+			MinFlightApex = 16, -- studs above the table before the bounce ("lob height")
+			Color = Color3.fromRGB(255, 150, 50),
+			Width = 0.32, -- studs, the line
+			HaloWidth = 1.0, -- studs, the companion
+			CoreTransparency = 0.15,
+			HaloTransparency = 0.8,
+			Lifetime = 0.5,
+			Amplitude = 0.22, -- studs (restrained)
+			WaveLengths = { 2.7, 4.9, 8.3 }, -- studs travelled per wave
+			EnvelopeLength = 11, -- studs: the slow amplitude modulation
+			FadeIn = 0.15, -- s
+			FadeOut = 0.35, -- s (the smash window ran out)
+			FadeOutOnHit = 0.08, -- s (the receiver hit it: the opportunity is over at once)
+			LeadIn = 0, -- s before the opportunity window the orange may start (0 = from the hit that created it)
 		},
 		-- CONTACT RING (Client/ContactRing; replaced the accuracy bar, 2026-11-17): a hollow ring round the incoming ball;
 		-- its arc (clockwise from 12 o'clock) completes and turns green while a flick right now would register.
@@ -1240,14 +1566,8 @@ local Config = {
 			PowerColor = Color3.fromRGB(200, 110, 255),
 			FullColor = Color3.fromRGB(255, 120, 230), -- the power bar at full charge
 			CurveColor = Color3.fromRGB(170, 120, 255),
+			ShowCurve = false, -- (2026-11-18) the Curve bar is replaced by the cursor trace (Feedback.CursorTrace); true = show it
 			ShowAfterRelease = 0.7, -- seconds the meter stays after the swing
-		},
-		-- Spin dial: appears where you press the button; the arrow is your charged spin.
-		SpinDial = {
-			RadiusPixels = 62,
-			IdleColor = Color3.fromRGB(235, 235, 245),
-			LowColor = Color3.fromRGB(255, 255, 255),
-			HighColor = Color3.fromRGB(255, 120, 40), -- full spin
 		},
 		-- Contact timing bar (bottom centre): the predicted clean / weak release window and a moving "now" needle.
 		Timing = {
@@ -1264,19 +1584,92 @@ local Config = {
 		-- Ball trail (follows the rendered ball; drawn from its real position every frame, so it shows the real curve).
 		Trail = {
 			Enabled = true,
-			Lifetime = 0.4,
-			Width = 1.0, -- studs (ball is 1.5 now; was 0.55)
+			Lifetime = 0.55, -- (Pass 13: was 0.4; the trail read as missing from the gameplay camera)
+			Width = 2.4, -- studs (2026-11-20: 2.4 with the comet texture, whose edges are soft; Pass 13 1.5 plain, was 1.0)
+			TailWidth = 0.35, -- width at the trail's end, as a fraction (was 0.15: the tail vanished)
+			LightEmission = 0.8, -- (was 0.55)
+			ColorLightEmission = 0.12, -- (2026-11-20) emission once a stage colour has taken over (additive glow washed purple to pink)
+			-- (Pass 15) TAPER: widest right behind the ball, narrowing smoothly to the oldest end (WidthScale key 0 = newest point at the ball,
+			-- 1 = oldest). Pass 14's narrow-head shape read as a tail growing away from the ball. (position along the trail, width fraction); the end is TailWidth.
+			Taper = { { 0, 1 }, { 0.2, 0.9 }, { 0.5, 0.58 }, { 0.8, 0.3 } },
 			SlowColor = Color3.fromRGB(190, 200, 215),
 			FastColor = Color3.fromRGB(255, 255, 255),
 			TopspinColor = Color3.fromRGB(255, 150, 70), -- tint by dominant spin axis (kept subtle)
 			BackspinColor = Color3.fromRGB(110, 180, 255),
 			SidespinColor = Color3.fromRGB(190, 120, 255),
-			TintStrength = 0.75, -- 0 = no spin tint; 1 = full tint at maximum spin
+			TintStrength = 0, -- (Pass 13) spin tint OFF: its orange topspin tint competed with the orange vulnerable-ball cue (spin physics unchanged)
 			FullSpeed = 126, -- studs/s at which the trail is at full brightness / width
 			MinTransparency = 0.25, -- most opaque the trail gets (fast ball)
 			MaxTransparency = 0.7, -- slow ball
 			WidthScaleSpinned = 1.35, -- width multiplier at maximum spin
 			SpinFullAt = 100, -- rad/s treated as "full spin" for the visuals
+			-- RALLY COLOURS (Pass 15): the base trail's colour follows the number of accepted RETURNS this rally (the server's
+			-- referee hit counter minus the serve, which is hit 1: counted once per legal paddle hit by either side, never from
+			-- ticks, bounces, predictions or duplicate messages; it restarts at 0 with every serve). Stage = floor(returns /
+			-- ReturnInterval): 0-9 white, 10-19 yellow, 20-29 red, 30+ purple. Independent of the pace percentage (RallyPace,
+			-- unchanged). The colour switches HARD at the boundary (a blend yellow -> red would pass through the orange of the
+			-- vulnerable-ball cue). The orange HighBallTrail overrides it while active; the stage colour is back when it ends.
+			RallyColors = {
+				Enabled = true,
+				ReturnInterval = 10,
+				Colors = {
+					Color3.fromRGB(255, 255, 255),
+					Color3.fromRGB(255, 226, 90),
+					Color3.fromRGB(225, 20, 60), -- (2026-11-20 deeper crimson: visible over the orange table)
+					Color3.fromRGB(176, 96, 255),
+				},
+				BlendTime = 0.15, -- s: the comet layers' fade-in / glow ease to a new stage (the colour itself switches at once)
+			},
+			-- (2026-11-20) the main ribbon's texture: the streaky comet body cut from the user's Trails sheet
+			-- (sprites/Trails/9251.jpg, top-right comet; tools/trail_textures.py -> assets/vfx/comet_body.png). nil = plain ribbon.
+			Texture = "rbxassetid://72980472869758",
+			-- COMET LAYERS (2026-11-20; replaces the single Pass 12/13 SpeedStreaks strand, whose texture was also drawn sideways:
+			-- Roblox Trails run the texture's height along the length). Textured Trails on the ball's follower, cut from the
+			-- user's SyphoDev Trails sheets (9251.jpg comets; 9247.jpg is the colour reference: white-hot head, stage-coloured
+			-- body). Each layer fades in from FromStage to FullStage (the return-count colour stage, 0 white .. 3 purple; Pass 15):
+			-- opening = body + core + light strands; yellow adds sparkle dust; red adds smoky wisps; purple = everything at full.
+			-- Opacity also scales with ball speed (SlowFactor at rest .. 1 at FullSpeed) and yields to the orange high-ball line.
+			-- Whiten mixes white into the stage colour. HeadClear = fraction nearest the ball left clear (never over the ball).
+			Comet = {
+				Enabled = true,
+				Layers = {
+					{ Name = "Core", Texture = "rbxassetid://100596374827505", -- comet_core.png (9251 slim bottom-right comet)
+						Width = 1.1, TailWidth = 0.4, Lifetime = 0.2, LightEmission = 1, ColorLightEmission = 1, Whiten = 0.75, HeadClear = 0.04,
+						FromStage = 0, FullStage = 3, MinOpacity = 0.7, MaxOpacity = 0.95, SlowFactor = 0.5 },
+					{ Name = "Strands", Texture = "rbxassetid://94684561859469", -- comet_strands.png (9251 centre-right comet)
+						Width = 3.6, TailWidth = 0.7, Lifetime = 0.35, LightEmission = 0.8, ColorLightEmission = 0.3, Whiten = 0.3, HeadClear = 0.06,
+						FromStage = 0, FullStage = 3, MinOpacity = 0.45, MaxOpacity = 0.8, SlowFactor = 0.5 },
+					{ Name = "Dust", Texture = "rbxassetid://123517828766864", -- comet_dust.png (9251 centre-left comet)
+						Width = 4.2, TailWidth = 1.0, Lifetime = 0.5, LightEmission = 1, ColorLightEmission = 0.8, Whiten = 0.5, HeadClear = 0.08,
+						FromStage = 1, FullStage = 3, MinOpacity = 0.4, MaxOpacity = 0.85, SlowFactor = 0.6 },
+					{ Name = "Wisps", Texture = "rbxassetid://84393863768285", -- comet_wisps.png (9251 smoky bottom-left comet)
+						Width = 4.0, TailWidth = 1.1, Lifetime = 0.6, LightEmission = 0.6, ColorLightEmission = 0.15, Whiten = 0.15, HeadClear = 0.1,
+						FromStage = 2, FullStage = 3, MinOpacity = 0.3, MaxOpacity = 0.6, SlowFactor = 0.6 },
+				},
+			},
+		},
+		-- SHOT VFX (2026-11-19; Client/ShotVfx; textures from the SyphoDev pack, assets/vfx/MANIFEST.md). One accent per swing
+		-- at the predicted contact (cancelled on a server miss, shown late at the server's contact if only the server says
+		-- hit), a paddle trail on strong strokes and smashes. Replaces the old ImpactFx burst while enabled. false = ImpactFx.
+		ShotVfx = {
+			Enabled = true,
+			StrongPower = 0.6, -- power from which a return counts as STRONG (burst + trail), scaled up to full power
+			Textures = {
+				Glint = "rbxassetid://87790381341943", -- sprites/impacts/hit_cross_glow_01
+				Burst = "rbxassetid://72862746379191", -- sprites/impacts/starburst_soft_02
+				SmashBurst = "rbxassetid://90799407633776", -- sprites/impacts/comic_burst_glow_03
+				SmashLines = "rbxassetid://133061155758744", -- sprites/impacts/speed_lines_glow_02
+				ScoopRing = "rbxassetid://139930241889632", -- sprites/rings/ring_soft_08
+				Trail = "rbxassetid://115112933165849", -- beams/energy_soft_01
+			},
+			Colors = {
+				Soft = Color3.fromRGB(255, 245, 225),
+				Strong = Color3.fromRGB(255, 170, 70),
+				Smash = Color3.fromRGB(255, 205, 60),
+				Scoop = Color3.fromRGB(120, 220, 255),
+			},
+			TrailLifetime = 0.16, -- s the ribbon lingers behind the paddle
+			TrailAfterContact = { strong = 0.16, smash = 0.22 }, -- s after the contact the trail stays on (the follow-through)
 		},
 		-- Impact burst when the server confirms a hit.
 		Impact = {

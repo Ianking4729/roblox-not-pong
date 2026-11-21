@@ -37,6 +37,7 @@ local ShotInput = require(Shared:WaitForChild("ShotInput"))
 local ShotLaunch = require(Shared:WaitForChild("ShotLaunch"))
 local TableWorld = require(Shared:WaitForChild("TableWorld"))
 local ServeRules = require(Shared:WaitForChild("ServeRules"))
+local CourtShape = require(Shared:WaitForChild("CourtShape"))
 
 local Server = script.Parent
 local ArenaBuilder = require(Server:WaitForChild("ArenaBuilder"))
@@ -72,7 +73,7 @@ local function remotes()
 		return r :: RemoteEvent
 	end
 	-- (ChargeStart, the hold-to-charge press message, was retired with click-and-flick)
-	return remote("BallSnapshot"), remote("ServeRequest"), remote("SwingRequest"), remote("SwingResult"), remote("ServeResult")
+	return remote("BallSnapshot"), remote("ServeRequest"), remote("SwingRequest"), remote("SwingResult"), remote("ServeResult"), remote("StartMatchRequest"), remote("StartMatchResult")
 end
 
 local function finite(n: any): boolean
@@ -82,7 +83,7 @@ end
 -- arena: ArenaBuilder.load() result. match: MatchState. avatars: AvatarService. bot: the bot Model (or nil).
 function RallyService.start(arena, match, avatars, bot: Model?)
 	local cfg, world = TableWorld.physics, TableWorld.world
-	local snapshotRemote, serveRemote, swingRemote, swingResultRemote, serveResultRemote = remotes()
+	local snapshotRemote, serveRemote, swingRemote, swingResultRemote, serveResultRemote, startMatchRemote, startMatchResultRemote = remotes()
 	local SC = Config.ShotControl
 	local rng = Random.new()
 	local referee = RallyReferee.new()
@@ -185,6 +186,7 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			or (referee.phase == "serveFlight" and referee.server == "Bot")
 	end
 
+	local highBall: any = nil -- (set by strike) the current hit's attackable-high-ball window, ShotInput.highBallWindow
 	local function ballInHand(): boolean
 		return serveSide == "Player" and (phase == "held" or phase == "windup")
 	end
@@ -202,6 +204,8 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			i = incomingForPlayer(), -- the ball is on its way to the player (aim now)
 			b = referee.bounces.Player, -- bounces on the player's half since the last hit
 			h = referee.hits, -- hit counter: identifies each incoming ball
+			-- attackable high ball for the current hit: smash-opportunity window (server time) and the receiver
+			hb = if highBall and highBall.hits == referee.hits and phase == "live" and not ball.resting then { a = highBall.a, z = highBall.z, r = highBall.r, h = highBall.h, k = highBall.k } else nil,
 			st =tossState and phase == "toss" and { p = tossState.position, v = tossState.velocity, t = tossState.time + timeOffset } or nil, -- the toss as it left the hand (server time)
 			f = f and { -- the active charge slow motion (rally only; never during a serve)
 				id = f.id,
@@ -344,12 +348,13 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 				swingStats.noSwing += 1
 				local found = "none"
 				for _, stroke in { "Forehand", "Backhand" } do
-					local a, reach = ShotInput.reachFor(root.CFrame, SC, stroke)
+					local a, reach = ShotInput.reachZone(root.CFrame, SC, stroke, false)
+					local oa, oreach = ShotInput.reachZone(root.CFrame, SC, stroke, true)
 					if a then
 						if ShotInput.contactWindow(incomingState, a, reach, false) then
-							found = stroke .. " normal"
+							found = if SC.ContactModel == "Body" then "normal zone" else stroke .. " normal"
 							break
-						elseif ShotInput.contactWindow(incomingState, a, ShotInput.emergencyReach(SC), false, nil, true) then
+						elseif ShotInput.contactWindow(incomingState, oa, oreach, false, nil, true) then
 							found = stroke .. " save ring"
 						elseif found == "none" and SC.RequireFallingBall and ShotInput.contactWindow(incomingState, a, reach, false, nil, false) then
 							found = stroke .. " only while rising"
@@ -401,12 +406,38 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		end
 	end
 
-	local function strike(side: string, velocity: Vector3, spin: Vector3)
+	-- shotKind (Pass 12): "emergency" (a player's save lob) | "lob" (the bot's pop-up) | nil (ordinary shots, serves)
+	local function strike(side: string, velocity: Vector3, spin: Vector3, shotKind: string?)
 		if side == "Player" then
 			unlockServe() -- a struck serve frees the server's feet
 		end
 		local outcome = referee:onHit(side)
 		ball.velocity, ball.spin, ball.resting = velocity, spin, false
+		-- VULNERABLE / HIGH DEFENSIVE BALL (2026-11-18; Pass 12: one shared classification for both competitors, the clients
+		-- only draw it, Feedback.HighBallTrail): orange when the hit is a defensive lob (a player's emergency save or the
+		-- bot's pop-up) or when its predicted flight gives the receiver a legal smash opportunity after its bounce
+		-- (ShotInput.highBallWindow: the post-bounce height through the smash band, within the receiver's legal smash
+		-- geometry) for at least MinWindow. Decided at the hit (never at the last instant). Orange marks a vulnerable ball,
+		-- not a guarantee that the receiver can reach it from where they stand.
+		do
+			local receiver = if side == "Player" then "Bot" else "Player"
+			local hb = ShotInput.highBallWindow(ball, receiver)
+			local now = workspace:GetServerTimeNow()
+			local HBT = Config.Feedback.HighBallTrail
+			local lob = shotKind == "emergency" or shotKind == "lob"
+			-- a HIGH return that opens a smash: a smash window, and the ball flies high (lob height) or sits up after its bounce
+			local open = hb ~= nil and (hb.to - hb.from) >= (HBT.MinWindow or 0) and (hb.flightApex >= (HBT.MinFlightApex or 0) or hb.apex >= (HBT.MinApex or 0))
+			if lob or open then
+				-- until the opportunity ends: the smash window's end, or (a lob with no window) the flight's end after its bounce
+				local z = if hb then hb.to else ShotInput.flightEnd(ball, receiver)
+				highBall = { hits = referee.hits, a = now, z = now + z, r = receiver, h = if hb then hb.apex else 0, k = if lob then "lob" else "high" }
+			else
+				highBall = nil
+			end
+			if TEL.Enabled then
+				tel(("HIGHBALL hit %d by %s%s: %s%s"):format(referee.hits, side, if lob then " (" .. tostring(shotKind) .. ")" else "", if hb then ("smash-legal window %.2f s, apex %.1f above the table (flight apex %.1f)"):format(hb.to - hb.from, hb.apex, hb.flightApex) else "no smash window", if highBall then " -> ORANGE" else ""))
+			end
+		end
 		lastHit[side] = os.clock()
 		lastActivity = os.clock()
 		if side == "Bot" then
@@ -585,10 +616,12 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 	-- with it the contact window's ideal moment, the timing error and the stretch) differed from what the player saw. The
 	-- claim is used only when it lies within MaxRootMismatch studs (horizontally) of the server's own view; otherwise the
 	-- server's position is used. (The F dive and its automatic return were retired on 2026-11-17: Config.Emergency.)
-	local function reachFor(player: Player, stroke: string?, claimed: any): (Vector3?, number, string?)
+	-- (2026-11-18) returns the reach in whichever ShotControl.ContactModel is active (ShotInput.reachZone: a body Zone,
+	-- or the Anchor point and radius), plus the effective root CFrame so the emergency reach uses the same position.
+	local function reachFor(player: Player, stroke: string?, claimed: any): (any, number, string?, CFrame?)
 		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
 		if not root then
-			return nil, SC.PaddleReach, "no character"
+			return nil, SC.PaddleReach, "no character", nil
 		end
 		local cf = root.CFrame
 		if typeof(claimed) == "Vector3" and finite(claimed.X) and finite(claimed.Z) then
@@ -597,8 +630,8 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 				cf = CFrame.new(claimed.X, cf.Position.Y, claimed.Z) * cf.Rotation
 			end
 		end
-		local anchor, reach = ShotInput.reachFor(cf, SC, stroke, nil)
-		return anchor, reach, nil
+		local reachArg, reach = ShotInput.reachZone(cf, SC, stroke, false)
+		return reachArg, reach, nil, cf
 	end
 	-- Per physics tick (240 Hz): the bot's serve strike / the player's judged serve contact, then paddle contacts.
 	-- (history covers the largest rewind a swing may ask for: latency + the flick recognition interval)
@@ -622,7 +655,7 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			-- the paddle meets the ball now (the contact judged at the flick, ContactDelay ago)
 			local pc = pendingContact
 			pendingContact = nil
-			strike("Player", pc.velocity, pc.spin)
+			strike("Player", pc.velocity, pc.spin, pc.kind)
 			pc.finish()
 			return
 		end
@@ -631,12 +664,12 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 				if (side == "Bot" or (Config.AutoReturn.Enabled and not SC.Enabled)) and referee:canHit(side) then
 					local striker = strikers[side]
 					if os.clock() - lastHit[side] > Config.Rally.HitCooldown and striker:shouldStrike(s.position, s.velocity) then
-						local shot, _, kind = striker:shot(s.position, rng, s)
+						local shot, _, kind = striker:shot(s.position, rng, s, referee.hits) -- (rally pace: this return's number)
 						if shot.velocity.Magnitude > 0 then
 							if kind == "lob" then
 								setEvent(side .. " pops up a high ball: smash it!")
 							end
-							strike(side, shot.velocity, shot.spin)
+							strike(side, shot.velocity, shot.spin, if kind == "lob" then "lob" else nil)
 							break
 						end
 					end
@@ -756,13 +789,13 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 
 	-- Apply a judged player contact: now (rewind to it, hit, re-simulate to the present; never steered afterwards) or, when
 	-- it is still ahead, on the physics tick that reaches it (pendingContact).
-	local function applyContact(contact: BallPhysics.State, velocity: Vector3, spin: Vector3, finish: () -> ())
+	local function applyContact(contact: BallPhysics.State, velocity: Vector3, spin: Vector3, finish: () -> (), shotKind: string?)
 		if contact.time <= ball.time + 1e-6 then
 			local catchUp = math.max(ball.time - contact.time, 0)
 			contact.accumulator = 0
 			ball = contact
 			ball.resting = false
-			strike("Player", velocity, spin)
+			strike("Player", velocity, spin, shotKind)
 			while catchUp > 1e-6 and phase == "live" do
 				local chunk = math.min(catchUp, cfg.fixedStep * cfg.maxStepsPerUpdate * 0.9)
 				advance(chunk)
@@ -770,14 +803,14 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			end
 			finish()
 		else
-			pendingContact = { time = contact.time, velocity = velocity, spin = spin, finish = finish }
+			pendingContact = { time = contact.time, velocity = velocity, spin = spin, finish = finish, kind = shotKind }
 		end
 	end
 
 	-- The player's normal launch from a judged contact: the flick's power and spin, the locked base aim and profile, the
 	-- deterministic timing error (offset from the ideal moment), stretch (distance from the stroke's anchor) and the SMASH
 	-- check, all through the shared ShotLaunch (the client's post-flick prediction runs the same code).
-	local function playerLaunch(contact: BallPhysics.State, fl, quality: string, offset: number, stroke: string, anchor: Vector3, aim: number, profile: number)
+	local function playerLaunch(contact: BallPhysics.State, fl, quality: string, offset: number, stroke: string, reachArg: any, aim: number, profile: number, returnIndex: number?)
 		local top, side, power = fl.topspin, fl.sidespin, fl.power
 		local p = contact.position
 		local smash = (quality == "clean" or quality == "weak") and ShotInput.smashEligible(p, power)
@@ -785,7 +818,7 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			hitter = "Player",
 			stroke = stroke,
 			timing = ShotInput.timingValue(offset),
-			stretch = Vector2.new(p.X - anchor.X, p.Z - anchor.Z).Magnitude / SC.PaddleReach,
+			stretch = ShotInput.reachStretch(reachArg, p), -- (either contact model; the client's prediction does the same)
 			smash = smash,
 			aim = aim,
 			profile = profile,
@@ -793,6 +826,10 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		if quality == "weak" and not smash then
 			top, side = top * SC.WeakSpinFactor, side * SC.WeakSpinFactor
 			opts.speedFactor = SC.WeakSpeedFactor
+		end
+		-- RALLY PACE (Config.RallyPace, off by default): ordinary shots only, on the speed INPUT (the shot is still solved)
+		if not smash and returnIndex then
+			opts.speedFactor = (opts.speedFactor or 1) * ShotLaunch.rallyPaceFactor(returnIndex, ShotLaunch.speedFor(power))
 		end
 		return ShotLaunch.compute(p, power, top, side, opts), top, side, smash, opts.stretch :: number
 	end
@@ -881,8 +918,8 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		local stroke = if req.stroke == "Backhand" then "Backhand" else "Forehand"
 		local aim = if finite(req.aim) then math.clamp(req.aim, -1, 1) else 0
 		local profile = if finite(req.profile) then math.clamp(req.profile, 0, 1) else 0.5
-		local anchor, reach, refuse = reachFor(player, stroke, req.root)
-		if not anchor then
+		local anchor, reach, refuse, reachCF = reachFor(player, stroke, req.root)
+		if not anchor or not reachCF then
 			return reply("rejected", refuse or "no character")
 		end
 		swingUsed = true
@@ -898,8 +935,9 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		if window then
 			quality, why, offset = ShotInput.classify(rel, window)
 		else
-			-- (the save ring keeps the falling-ball rule: emergency-save rules are unchanged by the rising-ball change)
-			local outer = if E.Enabled then ShotInput.contactWindow(inc, anchor, ShotInput.emergencyReach(SC), false, nil, true) else nil
+			-- (the save zone keeps the falling-ball rule: emergency-save rules are unchanged by the rising-ball change)
+			local oArg, oReach = ShotInput.reachZone(reachCF :: CFrame, SC, stroke, true)
+			local outer = if E.Enabled then ShotInput.contactWindow(inc, oArg, oReach, false, nil, true) else nil
 			if outer then
 				kind, window = "emergency", outer
 				quality, why, offset = ShotInput.classify(rel, outer)
@@ -914,7 +952,8 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 			lag = serverNow - flickT,
 			power = fl.power,
 			flickSpeed = fl.speed,
-			anchor = anchor,
+			anchor = ShotInput.reachPoint(anchor), -- (the reach point: the Anchor, or the body zone's sweet point)
+			contactModel = SC.ContactModel,
 			stroke = stroke,
 			aim = aim,
 			profile = profile,
@@ -1000,10 +1039,10 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 				arena.Ball.Position = ball.position
 				snapshot()
 				setEvent(("Emergency save! (%s %s, %s)"):format(string.lower(stroke), quality, shot.how))
-			end)
+			end, "emergency")
 			return reply(quality, why, info)
 		end
-		local shot, top, side, smash, stretch = playerLaunch(contact, fl, quality, offset, stroke, anchor :: Vector3, aim, profile)
+		local shot, top, side, smash, stretch = playerLaunch(contact, fl, quality, offset, stroke, anchor, aim, profile, referee.hits) -- (hits so far = this return's number: the serve is hit 1)
 		swingStats.normal += 1
 		info.aimPoint, info.topspin, info.sidespin, info.solve = shot.aim, top, side, shot.how
 		info.velocity, info.spin = shot.velocity, shot.spin
@@ -1073,8 +1112,51 @@ function RallyService.start(arena, match, avatars, bot: Model?)
 		end)
 	end
 
+	-- MATCH OVER (Pass 13): the rally simulation ends and the one ball goes to the seated player's free hand (the normal
+	-- hand-held ball: it rides the hand on and off the platform, no collision). Nothing restarts by itself: the player
+	-- asks for a new match (StartMatchRequest), validated here.
+	local lastStartRequest: { [Player]: number } = {}
+	startMatchRemote.OnServerEvent:Connect(function(player)
+		local now = os.clock()
+		if now - (lastStartRequest[player] or 0) < 1 then
+			return
+		end
+		lastStartRequest[player] = now
+		local function reply(ok: boolean, reason: string)
+			startMatchResultRemote:FireClient(player, { ok = ok, reason = reason })
+		end
+		if avatars.getSeatedPlayer() ~= player then
+			return reply(false, "you are not the seated player")
+		end
+		if match:getState() ~= State.MatchOver then
+			return reply(false, "the match is not over")
+		end
+		local character = player.Character
+		local hum = character and character:FindFirstChildOfClass("Humanoid")
+		local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not hum or not root or hum.Health <= 0 then
+			return reply(false, "no character")
+		end
+		local p = root.Position
+		-- (2026-11-21) on the circular court (Shared/CourtShape), not just inside its bounding square
+		if not CourtShape.contains(p) or math.abs(p.Y - Config.Layout.FloorY) > Config.Avatar.Height then
+			return reply(false, "stand on the platform to start a match")
+		end
+		local ok, err = match:rematch() -- scores, server, rally count reset; -> ReadyToServe -> hold() places the same ball
+		reply(ok, if ok then "new match" else tostring(err))
+		if ok then
+			setEvent("New match")
+		end
+	end)
+	Players.PlayerRemoving:Connect(function(p)
+		lastStartRequest[p] = nil
+	end)
+
 	match.Changed:Connect(function(newState)
-		if newState == State.ReadyToServe then
+		if newState == State.MatchOver then
+			hold("Player") -- (the ball returns to the seated player's free hand; no serve can start: the state is MatchOver)
+			setEvent("Match over. Start a new match from the platform (button or E)")
+		elseif newState == State.ReadyToServe then
 			hold(match.server)
 			if botBrain then
 				botBrain:goHome()

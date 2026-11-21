@@ -57,8 +57,109 @@ end
 
 -- The reach for a swing right now: the stroke's anchor and its NORMAL radius (the outer emergency radius is
 -- ShotInput.emergencyReach). (The F dive's extended reach was retired on 2026-11-17; the 4th argument is ignored.)
+-- (Anchor model only; the zone-aware entry point is ShotInput.reachZone.)
 function ShotInput.reachFor(rootCFrame: CFrame, settings: any, stroke: string?, _unused: any?): (Vector3?, number)
 	return ShotInput.anchor(rootCFrame, settings, stroke), settings.PaddleReach
+end
+
+-- ===== BODY-CENTRED CONTACT ZONE (2026-11-18, Config.ShotControl.ContactModel = "Body", sizes Config.ContactZone) =====
+-- One symmetric volume around the torso, the same for forehand and backhand: horizontally two half-ellipses on the
+-- root's position (Forward studs ahead / Back studs behind, Side studs to either side), between LowAboveFloor and
+-- HighAboveFloor. It is oriented along the TABLE AXIS (forward = toward the opponent), not the character's facing, so the
+-- client and the server (which sees the character slightly late) agree from the root position alone. Assisted
+-- gameplay reach: no body part, accessory or paddle collision ever creates a contact; only the ball centre inside the
+-- volume at the judged contact moment counts. The emergency zone is the same shape, bigger (Config.ContactZone.Emergency).
+export type Zone = {
+	center: Vector3, -- root position (horizontal centre; Y unused)
+	forward: Vector3, -- unit, horizontal: toward the opponent
+	right: Vector3, -- unit, horizontal
+	side: number,
+	front: number,
+	back: number,
+	lowY: number, -- absolute
+	highY: number,
+	sweet: Vector3, -- the ideal-contact point (ball closest to it = the ideal moment; also the reach "anchor")
+	emergency: boolean,
+}
+
+local function zoneOf(rootPos: Vector3, dims: any, emergency: boolean): Zone
+	local C = Config.ContactZone
+	local floor = Config.Layout.FloorY
+	local fwd = Vector3.new(0, 0, TableWorld.towardSide("Bot")).Unit
+	local right = Vector3.new(-fwd.Z, 0, fwd.X) -- (forward x up: the player's right as they face the opponent)
+	local center = Vector3.new(rootPos.X, 0, rootPos.Z)
+	return {
+		center = center,
+		forward = fwd,
+		right = right,
+		side = dims.Side,
+		front = dims.Forward,
+		back = dims.Back,
+		lowY = floor + dims.LowAboveFloor,
+		highY = floor + dims.HighAboveFloor,
+		sweet = center + fwd * C.SweetForward,
+		emergency = emergency,
+	}
+end
+
+-- The normal (or emergency) zone for a root at `rootCFrame` (only its position is used).
+function ShotInput.bodyZone(rootCFrame: CFrame, emergency: boolean?): Zone
+	local C = Config.ContactZone
+	return zoneOf(rootCFrame.Position, if emergency then C.Emergency else C.Normal, emergency == true)
+end
+
+-- Zone-local horizontal coordinates of `p`: x to the right, z forward.
+function ShotInput.zoneLocal(z: Zone, p: Vector3): (number, number)
+	local d = Vector3.new(p.X - z.center.X, 0, p.Z - z.center.Z)
+	return d:Dot(z.right), d:Dot(z.forward)
+end
+
+-- Normalised horizontal radius of `p` in the zone: 0 at the centre, 1 on the boundary (> 1 outside).
+function ShotInput.zoneRadius(z: Zone, p: Vector3): number
+	local x, f = ShotInput.zoneLocal(z, p)
+	local depth = if f >= 0 then z.front else z.back
+	return math.sqrt((x / math.max(z.side, 1e-3)) ^ 2 + (f / math.max(depth, 1e-3)) ^ 2)
+end
+
+function ShotInput.zoneContains(z: Zone, p: Vector3): boolean
+	if p.Y < z.lowY or p.Y > z.highY then
+		return false
+	end
+	return ShotInput.zoneRadius(z, p) <= 1
+end
+
+-- How far a contact at `p` is from the comfortable middle (feeds ShotLaunch's "stretch", 0 .. 1): the normalised
+-- distance from the sweet point toward the zone boundary.
+function ShotInput.zoneStretch(z: Zone, p: Vector3): number
+	local d = Vector2.new(p.X - z.sweet.X, p.Z - z.sweet.Z).Magnitude
+	local scale = math.max(z.side, z.front)
+	return math.clamp(d / math.max(scale, 1e-3), 0, 1)
+end
+
+-- THE entry point for a rally swing's reach (both models): returns what contactWindow takes as its 2nd and 3rd
+-- arguments. Body model: (Zone, 0); Anchor model: (anchor point, PaddleReach or the emergency radius).
+function ShotInput.reachZone(rootCFrame: CFrame, settings: any, stroke: string?, emergency: boolean?): (any, number)
+	if settings.ContactModel == "Body" then
+		return ShotInput.bodyZone(rootCFrame, emergency), 0
+	end
+	return ShotInput.anchor(rootCFrame, settings, stroke), if emergency then ShotInput.emergencyReach(settings) else settings.PaddleReach
+end
+
+-- The point a reach is centred on (Body: the sweet point; Anchor: the anchor itself).
+function ShotInput.reachPoint(r: any): Vector3?
+	if typeof(r) == "table" then
+		return (r :: Zone).sweet
+	end
+	return r
+end
+
+-- Stretch for the launch from a reach (either model) and a contact point.
+function ShotInput.reachStretch(r: any, p: Vector3): number
+	if typeof(r) == "table" then
+		return ShotInput.zoneStretch(r :: Zone, p)
+	end
+	local a = r :: Vector3
+	return Vector2.new(p.X - a.X, p.Z - a.Z).Magnitude / Config.ShotControl.PaddleReach
 end
 
 -- Timing value used by the shot error model: release offset from the ideal moment, in half clean-windows.
@@ -94,6 +195,93 @@ function ShotInput.smashEligible(p: Vector3, power: number): boolean
 	return behind <= S.SmashMaxBehindEndLine
 end
 
+-- ATTACKABLE HIGH BALL (2026-11-18): simulate a just-hit ball (`state`) and find when it gives `receiver` ("Player" |
+-- "Bot") a SMASH opportunity under the smash rule's geometry: after its one legal bounce on the receiver's half (never
+-- before it: no volleys) and before a second bounce / the floor, the ball centre is at least SmashMinHeight above the
+-- table, no higher than the reachable contact height (ContactZone.Normal.HighAboveFloor) and no more than
+-- SmashMaxBehindEndLine behind the receiver's end line. (The flick's power and timing still decide whether a real
+-- swing becomes a smash.) Returns { from, to } in seconds after `state`, or nil. Used by the server for every hit; the
+-- clients only draw what the server classified.
+function ShotInput.highBallWindow(state: BallPhysics.State, receiver: string, horizon: number?): { from: number, to: number, apex: number, flightApex: number }?
+	local S = Config.ShotControl
+	local cfg, world = TableWorld.physics, TableWorld.world
+	local s = BallPhysics.copyState(state)
+	s.resting = false
+	local events: { BallPhysics.Event } = {}
+	local endZ = TableWorld.endLineZ(receiver)
+	local toward = TableWorld.towardSide(receiver)
+	local surface = Config.Layout.SurfaceY
+	local highY = Config.Layout.FloorY + Config.ContactZone.Normal.HighAboveFloor
+	local bounced = false
+	local apex = 0 -- highest centre above the table after the legal bounce
+	local flightApex = state.position.Y - surface -- (Pass 12) highest centre above the table BEFORE that bounce (a lob flies high)
+	local from: number?, to: number? = nil, nil
+	local n = math.floor((horizon or 3) / cfg.fixedStep)
+	for i = 1, n do
+		local before = #events
+		BallPhysics.tick(s, cfg, world, events)
+		for k = before + 1, #events do
+			local e = events[k]
+			if e.kind == "table" then
+				if e.surface == receiver then
+					if bounced then
+						return if from and to then { from = from, to = to, apex = apex, flightApex = flightApex } else nil -- a second bounce: the opportunity is over
+					end
+					bounced = true
+				elseif bounced then
+					return if from and to then { from = from, to = to, apex = apex, flightApex = flightApex } else nil
+				end -- (a serve's first bounce on the server's own half is expected)
+			elseif e.kind == "floor" or e.kind == "net" then
+				return if from and to then { from = from, to = to, apex = apex, flightApex = flightApex } else nil
+			end
+		end
+		if not bounced then
+			flightApex = math.max(flightApex, s.position.Y - surface)
+		end
+		if bounced then
+			local p = s.position
+			apex = math.max(apex, p.Y - surface)
+			local behind = (p.Z - endZ) * toward
+			if p.Y - surface >= S.SmashMinHeight and p.Y <= highY and behind <= S.SmashMaxBehindEndLine then
+				local t = i * cfg.fixedStep
+				from = from or t
+				to = t
+			end
+		end
+		if s.resting then
+			break
+		end
+	end
+	return if from and to then { from = from, to = to, apex = apex, flightApex = flightApex } else nil
+end
+
+-- (Pass 12) Seconds from `state` until its flight ends for `receiver`: the first contact after its legal bounce on the
+-- receiver's half (a second bounce, the floor, the net) or `horizon`. Used to time a lob's orange trail with no smash window.
+function ShotInput.flightEnd(state: BallPhysics.State, receiver: string, horizon: number?): number
+	local cfg, world = TableWorld.physics, TableWorld.world
+	local s = BallPhysics.copyState(state)
+	s.resting = false
+	local events: { BallPhysics.Event } = {}
+	local bounced = false
+	local n = math.floor((horizon or 3) / cfg.fixedStep)
+	for i = 1, n do
+		local before = #events
+		BallPhysics.tick(s, cfg, world, events)
+		for k = before + 1, #events do
+			local e = events[k]
+			if e.kind == "table" and e.surface == receiver and not bounced then
+				bounced = true
+			elseif e.kind == "table" or e.kind == "floor" or e.kind == "net" then
+				return i * cfg.fixedStep
+			end
+		end
+		if s.resting then
+			return i * cfg.fixedStep
+		end
+	end
+	return horizon or 3
+end
+
 -- Is a ball centre at `p` inside the paddle's reach (horizontal radius + height band above the floor)?
 function ShotInput.inReach(p: Vector3, anchor: Vector3, reach: number): boolean
 	local R, floor = Config.Rally, Config.Layout.FloorY
@@ -107,7 +295,9 @@ end
 
 -- PREPARATION from the cursor's screen position (fractions of the viewport: fx 0 = left edge .. 1 = right, fy 0 = top ..
 -- 1 = bottom). Returns:
---   stroke   "Forehand" | "Backhand" (left of the dead zone = backhand; inside it the current stroke is kept)
+--   stroke   "Forehand" | "Backhand": with ShotControl.StrokeSelect = "Q" (default) always `currentStroke` (Q selects
+--            it); with "Cursor", left of the dead zone = backhand, right = forehand, inside it the current stroke is kept.
+--            Either stroke aims across the whole opponent's half (aim comes from the cursor alone).
 --   aim      -1 .. 1 base placement across the opponent's half (cursor left = their left as you see it)
 --   profile  0 (low drive) .. 1 (high arc): higher on the screen = a higher arc
 --   u, v     the prepared paddle position for the arm: u -1..1 across the screen, v 0 (low) .. 1 (high)
@@ -120,10 +310,12 @@ function ShotInput.prep(fx: number, fy: number, currentStroke: string?): (string
 	local f = fx - 0.5
 	local dead = S.StrokeDeadZone or 0
 	local stroke = currentStroke or "Forehand"
-	if f < -dead then
-		stroke = "Backhand"
-	elseif f > dead then
-		stroke = "Forehand"
+	if S.StrokeSelect == "Cursor" then -- (2026-11-18 default "Q": the Q key selects the stroke; the cursor never does)
+		if f < -dead then
+			stroke = "Backhand"
+		elseif f > dead then
+			stroke = "Forehand"
+		end
 	end
 	local aim = math.clamp(f / math.max(P.AimHalfSpan, 1e-3), -P.AimMaxX, P.AimMaxX)
 	local profile = math.clamp((P.ProfileBottom - fy) / math.max(P.ProfileBottom - P.ProfileTop, 1e-3), 0, 1)
@@ -220,14 +412,18 @@ end
 -- Returns nil when the ball never becomes hittable within `horizon` seconds.
 local SEGMENT_PREFER_LATER = 0.5
 
+-- `anchor` is EITHER a point (Anchor model, with `reach` its radius) OR a ShotInput.Zone (Body model; `reach` ignored,
+-- the ideal moment = the ball closest to the zone's sweet point). ShotInput.reachZone returns the right pair.
 function ShotInput.contactWindow(
 	state: BallPhysics.State,
-	anchor: Vector3,
+	anchor: any,
 	reach: number,
 	bounced: boolean,
 	horizon: number?,
 	requireFalling: boolean? -- nil = Config.ShotControl.RequireFallingBall; true = only falling (or past the end line)
 ): Window?
+	local zone: Zone? = if typeof(anchor) == "table" then anchor :: Zone else nil
+	local point: Vector3 = if zone then zone.sweet else anchor :: Vector3
 	local cfg, world = TableWorld.physics, TableWorld.world
 	local falling = if requireFalling ~= nil then requireFalling else Config.ShotControl.RequireFallingBall == true
 	local s = BallPhysics.copyState(state)
@@ -281,9 +477,10 @@ function ShotInput.contactWindow(
 		end
 		local t = i * cfg.fixedStep
 		local p = s.position
-		local hittable = bounced and ShotInput.inReach(p, anchor, reach) and (not falling or s.velocity.Y <= 0 or p.Z > endZ)
+		local inside = if zone then ShotInput.zoneContains(zone, p) else ShotInput.inReach(p, point, reach)
+		local hittable = bounced and inside and (not falling or s.velocity.Y <= 0 or p.Z > endZ)
 		if hittable then
-			local d = Vector2.new(p.X - anchor.X, p.Z - anchor.Z).Magnitude
+			local d = Vector2.new(p.X - point.X, p.Z - point.Z).Magnitude
 			if not cur then
 				cur = { enter = t, exit = t, ideal = t, best = d, pos = p }
 			end
@@ -299,8 +496,9 @@ function ShotInput.contactWindow(
 		end
 		-- moving away beyond any chance of coming back into reach: stop early (prediction runs every frame)
 		if bounced and not cur then
-			local dx, dz = p.X - anchor.X, p.Z - anchor.Z
-			if dx * dx + dz * dz > (reach + 12) ^ 2 and (dx * s.velocity.X + dz * s.velocity.Z) > 0 then
+			local dx, dz = p.X - point.X, p.Z - point.Z
+			local extent = if zone then math.max(zone.side, zone.front, zone.back) + math.abs(zone.sweet.X - zone.center.X) + math.abs(zone.sweet.Z - zone.center.Z) else reach
+			if dx * dx + dz * dz > (extent + 12) ^ 2 and (dx * s.velocity.X + dz * s.velocity.Z) > 0 then
 				break
 			end
 		end

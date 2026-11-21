@@ -9,6 +9,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
 local BallPhysics = require(Shared:WaitForChild("BallPhysics"))
 local TableWorld = require(Shared:WaitForChild("TableWorld"))
+local CourtShape = require(Shared:WaitForChild("CourtShape"))
 
 local BotController = {}
 BotController.__index = BotController
@@ -27,7 +28,9 @@ local function clampTarget(p: Vector3): Vector3
 	local B = Config.BotPlay
 	local endZ = TableWorld.endLineZ("Bot") -- bot faces +Z; "behind" is -Z
 	local z = math.clamp(p.Z, endZ - B.MaxStepBack, endZ - B.MinStepBack)
-	local halfX = Config.Platform.Size.X / 2 - 3
+	-- (2026-11-21) the old slab's lateral limit (unchanged bot movement), and never past the circular court's edge
+	local legacy = (Config.Platform.LegacyRectSize or Config.Platform.Size).X / 2 - 3
+	local halfX = math.min(legacy, CourtShape.halfWidthAt(z) - 3)
 	local x = math.clamp(p.X, TableWorld.center.X - halfX, TableWorld.center.X + halfX)
 	return Vector3.new(x, Config.Layout.FloorY, z)
 end
